@@ -12,11 +12,8 @@ BEGIN
 END;
 $$;
 
-SELECT
-    cron.schedule(
-        jobname   => 'core_zombie_killer',
-        schedule  => '*/30 * * * *',
-        command   => $cmd$
-            SELECT core.reset_stuck_calls();
-        $cmd$
-    );
+SELECT cron.schedule(
+    'core_zombie_killer',          -- jobname
+    '*/30 * * * *',                -- schedule (every 30 minutes)
+    'SELECT core.reset_stuck_calls();'  -- command
+);

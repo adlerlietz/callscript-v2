@@ -1,7 +1,9 @@
--- 07_public_views.sql
--- Create a safe, read-only public view for listing calls in the dashboard.
+-- 09_fix_calls_overview.sql
+-- Force recreation of calls_overview with audio_url field
 
-CREATE OR REPLACE VIEW public.calls_overview AS
+DROP VIEW IF EXISTS public.calls_overview CASCADE;
+
+CREATE VIEW public.calls_overview AS
 SELECT
   c.id,
   c.ringba_call_id,
@@ -18,5 +20,4 @@ FROM core.calls AS c;
 COMMENT ON VIEW public.calls_overview IS
   'Safe, read-only list of calls (no PII beyond caller_number) for the CallScript dashboard.';
 
--- Grant read access to app roles (we can open this up further later if needed)
 GRANT SELECT ON public.calls_overview TO authenticated, service_role, anon;

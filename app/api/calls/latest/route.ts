@@ -8,7 +8,7 @@ const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
 export async function GET() {
   const { data, error } = await supabase
-    .from("ringba_calls_latest")
+    .from("calls_overview")
     .select("*")
     .order("start_time_utc", { ascending: false })
     .limit(100);

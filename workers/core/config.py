@@ -53,6 +53,20 @@ class Settings(BaseSettings):
     )
 
     # =========================================================================
+    # RINGBA CREDENTIALS (Required for Ingest Lane)
+    # =========================================================================
+
+    ringba_account_id: Optional[str] = Field(
+        default=None,
+        description="Ringba account ID (e.g., RA9ba54ee...)",
+    )
+
+    ringba_token: Optional[str] = Field(
+        default=None,
+        description="Ringba API token",
+    )
+
+    # =========================================================================
     # PATHS
     # =========================================================================
 
@@ -177,6 +191,22 @@ class Settings(BaseSettings):
                 "Add it to your .env file."
             )
         return self.openai_api_key
+
+    def require_ringba(self) -> tuple[str, str]:
+        """
+        Get Ringba credentials or raise error.
+
+        Use this in Ingest Lane to enforce credential requirement.
+
+        Returns:
+            Tuple of (account_id, token)
+        """
+        if not self.ringba_account_id or not self.ringba_token:
+            raise ValueError(
+                "RINGBA_ACCOUNT_ID and RINGBA_TOKEN are required for Ingest Lane. "
+                "Add them to your .env file."
+            )
+        return self.ringba_account_id, self.ringba_token
 
     @property
     def worker_log_path(self) -> str:

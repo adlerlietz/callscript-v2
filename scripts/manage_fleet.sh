@@ -23,6 +23,7 @@ readonly FACTORY_WORKER_COUNT=4
 readonly FACTORY_SCRIPT="/workspace/workers/factory/worker.py"
 readonly VAULT_SCRIPT="/workspace/workers/vault/worker.py"
 readonly JUDGE_SCRIPT="/workspace/workers/judge/worker.py"
+readonly INGEST_SCRIPT="/workspace/workers/ingest/worker.py"
 readonly ENV_FILE="/workspace/.env"
 readonly LOG_DIR="/workspace/logs"
 readonly PID_DIR="/workspace/pids"

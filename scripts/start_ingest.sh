@@ -118,7 +118,7 @@ start_daemon() {
         exit 1
     fi
 
-    # Rotate large log
+    # Rotate large log (>50MB)
     if [[ -f "$LOG_FILE" ]]; then
         local size
         size=$(stat -c%s "$LOG_FILE" 2>/dev/null || stat -f%z "$LOG_FILE" 2>/dev/null || echo 0)
@@ -156,7 +156,7 @@ stop_daemon() {
         return 0
     fi
 
-    # Graceful shutdown
+    # Graceful shutdown (SIGTERM)
     kill -TERM "$pid" 2>/dev/null || true
 
     # Wait up to 30 seconds
@@ -203,7 +203,7 @@ show_status() {
     echo ""
     if [[ -f "$LOG_FILE" ]]; then
         echo "  Recent Log:"
-        tail -3 "$LOG_FILE" 2>/dev/null | sed 's/^/    /'
+        tail -5 "$LOG_FILE" 2>/dev/null | sed 's/^/    /'
     fi
     echo ""
     echo "=========================================="

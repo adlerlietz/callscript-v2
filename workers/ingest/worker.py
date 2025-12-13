@@ -9,13 +9,27 @@ Architecture:
 - Polls Ringba every 60 seconds
 - Fetches last 5 minutes of call data (overlapping windows for reliability)
 - Upserts to database with deduplication on ringba_call_id
-- Sets org_id for multi-tenant support
+- Does NOT overwrite status on conflict (preserves pipeline progress)
+
+Usage:
+    # Normal mode (continuous, last 5 minutes)
+    python workers/ingest/worker.py
+
+    # Backfill mode (one-time, last N hours)
+    python workers/ingest/worker.py --backfill --hours 24
+
+    # Backfill mode (one-time, specific date range)
+    python workers/ingest/worker.py --backfill --start "2025-12-01" --end "2025-12-10"
+
+    # Backfill mode (one-time, last N days)
+    python workers/ingest/worker.py --backfill --days 7
 
 Server: RunPod (Ubuntu 22.04) or any Linux server
 Database: Supabase (PostgreSQL)
 API: Ringba Call Logs
 """
 
+import argparse
 import logging
 import signal
 import sys
@@ -39,7 +53,9 @@ SYNC_INTERVAL = 60  # Seconds between sync cycles
 LOOKBACK_MINUTES = 5  # How far back to fetch (overlap for reliability)
 PAGE_SIZE = 1000  # Ringba API page size
 REQUEST_TIMEOUT = 30  # API request timeout
-DEFAULT_ORG_SLUG = "default"  # Organization slug to use
+
+# Default Organization ID (from migration 01_core_schema.sql)
+DEFAULT_ORG_ID = "00000000-0000-0000-0000-000000000001"
 
 # Ringba API columns to fetch
 RINGBA_COLUMNS = [
@@ -78,9 +94,9 @@ class IngestRepository:
     Repository for Ingest Lane operations.
 
     Handles:
-    - Looking up default organization
     - Upserting calls with deduplication
     - Managing campaigns
+    - Preserving status on conflict
     """
 
     def __init__(self, client):
@@ -92,46 +108,11 @@ class IngestRepository:
         """
         self.client = client
         self.schema = client.schema("core")
-        self._org_id_cache: Optional[str] = None
         self._campaign_cache: dict[str, str] = {}  # ringba_campaign_id -> uuid
 
-    def get_default_org_id(self) -> str:
-        """
-        Get the default organization ID.
-
-        Caches the result to avoid repeated queries.
-
-        Returns:
-            UUID of the default organization
-
-        Raises:
-            ValueError: If default org doesn't exist
-        """
-        if self._org_id_cache is not None:
-            return self._org_id_cache
-
-        try:
-            response = (
-                self.schema
-                .from_("organizations")
-                .select("id")
-                .eq("slug", DEFAULT_ORG_SLUG)
-                .single()
-                .execute()
-            )
-
-            if not response.data:
-                raise ValueError(f"Default organization '{DEFAULT_ORG_SLUG}' not found")
-
-            self._org_id_cache = response.data["id"]
-            logger.info(f"Cached default org_id: {self._org_id_cache}")
-            return self._org_id_cache
-
-        except Exception as e:
-            logger.error(f"Failed to get default org: {e}")
-            raise
-
-    def ensure_campaign(self, ringba_campaign_id: str, campaign_name: str, org_id: str) -> Optional[str]:
+    def ensure_campaign(
+        self, ringba_campaign_id: str, campaign_name: str, org_id: str
+    ) -> Optional[str]:
         """
         Ensure campaign exists and return its UUID.
 
@@ -145,6 +126,9 @@ class IngestRepository:
         Returns:
             Campaign UUID or None if creation failed
         """
+        if not ringba_campaign_id:
+            return None
+
         # Check cache first
         if ringba_campaign_id in self._campaign_cache:
             return self._campaign_cache[ringba_campaign_id]
@@ -152,12 +136,11 @@ class IngestRepository:
         try:
             # Try to find existing
             response = (
-                self.schema
-                .from_("campaigns")
+                self.schema.from_("campaigns")
                 .select("id")
                 .eq("ringba_campaign_id", ringba_campaign_id)
                 .eq("org_id", org_id)
-                .maybeSingle()
+                .maybe_single()
                 .execute()
             )
 
@@ -167,13 +150,14 @@ class IngestRepository:
 
             # Create new campaign
             response = (
-                self.schema
-                .from_("campaigns")
-                .insert({
-                    "ringba_campaign_id": ringba_campaign_id,
-                    "name": campaign_name or "Unknown Campaign",
-                    "org_id": org_id,
-                })
+                self.schema.from_("campaigns")
+                .insert(
+                    {
+                        "ringba_campaign_id": ringba_campaign_id,
+                        "name": campaign_name or "Unknown Campaign",
+                        "org_id": org_id,
+                    }
+                )
                 .select("id")
                 .single()
                 .execute()
@@ -189,8 +173,7 @@ class IngestRepository:
             logger.warning(f"Campaign upsert conflict, refetching: {e}")
             try:
                 response = (
-                    self.schema
-                    .from_("campaigns")
+                    self.schema.from_("campaigns")
                     .select("id")
                     .eq("ringba_campaign_id", ringba_campaign_id)
                     .eq("org_id", org_id)
@@ -206,46 +189,89 @@ class IngestRepository:
 
     def upsert_calls(self, calls: list[dict[str, Any]]) -> tuple[int, int]:
         """
-        Upsert calls to database with deduplication.
+        Upsert calls to database with smart conflict handling.
+
+        On conflict (ringba_call_id exists):
+        - DO NOT update status (preserves pipeline progress)
+        - Only update mutable fields: audio_url, duration_seconds, revenue
 
         Args:
             calls: List of call records to upsert
 
         Returns:
-            Tuple of (inserted_count, updated_count)
+            Tuple of (total_processed, new_inserted)
         """
         if not calls:
             return 0, 0
 
+        # Get existing call IDs to determine what's new
+        ringba_ids = [c["ringba_call_id"] for c in calls if c.get("ringba_call_id")]
+
         try:
-            # Upsert with conflict on ringba_call_id
-            # ignoreDuplicates=False means we update existing records
-            response = (
-                self.schema
-                .from_("calls")
-                .upsert(
-                    calls,
-                    on_conflict="ringba_call_id",
-                    ignore_duplicates=True,  # Don't update existing (preserve status)
-                )
+            existing_response = (
+                self.schema.from_("calls")
+                .select("ringba_call_id")
+                .in_("ringba_call_id", ringba_ids)
                 .execute()
             )
-
-            # Count results (approximation since upsert doesn't distinguish)
-            return len(calls), 0
-
+            existing_ids = {r["ringba_call_id"] for r in (existing_response.data or [])}
         except Exception as e:
-            logger.error(f"Failed to upsert calls: {e}")
-            raise
+            logger.warning(f"Failed to check existing calls: {e}")
+            existing_ids = set()
+
+        # Split into new vs existing
+        new_calls = [c for c in calls if c["ringba_call_id"] not in existing_ids]
+        existing_calls = [c for c in calls if c["ringba_call_id"] in existing_ids]
+
+        inserted = 0
+        updated = 0
+
+        # Insert new calls (with status = 'pending')
+        if new_calls:
+            try:
+                self.schema.from_("calls").insert(new_calls).execute()
+                inserted = len(new_calls)
+                logger.debug(f"Inserted {inserted} new calls")
+            except Exception as e:
+                logger.error(f"Failed to insert new calls: {e}")
+
+        # Update existing calls (only mutable fields, NOT status)
+        for call in existing_calls:
+            try:
+                update_data = {
+                    "audio_url": call.get("audio_url"),
+                    "duration_seconds": call.get("duration_seconds"),
+                    "revenue": call.get("revenue"),
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+                # Remove None values
+                update_data = {k: v for k, v in update_data.items() if v is not None}
+
+                if update_data:
+                    self.schema.from_("calls").update(update_data).eq(
+                        "ringba_call_id", call["ringba_call_id"]
+                    ).execute()
+                    updated += 1
+            except Exception as e:
+                logger.warning(f"Failed to update call {call['ringba_call_id'][:8]}...: {e}")
+
+        return len(calls), inserted
 
     def get_queue_stats(self) -> dict[str, int]:
         """Get count of calls by status."""
         stats = {}
-        for status in ["pending", "downloaded", "processing", "transcribed", "flagged", "safe", "failed"]:
+        for status in [
+            "pending",
+            "downloaded",
+            "processing",
+            "transcribed",
+            "flagged",
+            "safe",
+            "failed",
+        ]:
             try:
                 response = (
-                    self.schema
-                    .from_("calls")
+                    self.schema.from_("calls")
                     .select("id", count="exact")
                     .eq("status", status)
                     .execute()
@@ -311,6 +337,7 @@ def fetch_ringba_calls(
 
             logger.debug(f"Fetched {len(records)} records at offset {offset}")
 
+            # Terminate on empty, partial, or incomplete page
             if not records or partial_result:
                 break
 
@@ -354,7 +381,6 @@ def map_ringba_to_call(
     # Parse call datetime
     call_dt = record.get("callDt")
     if call_dt:
-        # Ringba returns ISO format or Unix timestamp
         try:
             if isinstance(call_dt, (int, float)):
                 start_time = datetime.fromtimestamp(call_dt / 1000, tz=timezone.utc)
@@ -397,16 +423,13 @@ def run_sync_cycle(
         lookback_minutes: How far back to fetch
 
     Returns:
-        Tuple of (fetched_count, upserted_count)
+        Tuple of (fetched_count, inserted_count)
     """
-    # Calculate time window
+    # Calculate time window: NOW - 5 minutes to NOW
     now = datetime.now(timezone.utc)
     start_time = now - timedelta(minutes=lookback_minutes)
 
     logger.info(f"Syncing {start_time.strftime('%H:%M:%S')} -> {now.strftime('%H:%M:%S')} UTC")
-
-    # Get default org_id (cached after first call)
-    org_id = repo.get_default_org_id()
 
     # Fetch from Ringba
     records = fetch_ringba_calls(account_id, token, start_time, now)
@@ -431,34 +454,183 @@ def run_sync_cycle(
             campaign_id = repo.ensure_campaign(
                 ringba_campaign_id,
                 record.get("campaignName", "Unknown"),
-                org_id,
+                DEFAULT_ORG_ID,
             )
 
         # Map to database format
-        call = map_ringba_to_call(record, org_id, campaign_id)
+        call = map_ringba_to_call(record, DEFAULT_ORG_ID, campaign_id)
         calls.append(call)
 
-    # Upsert to database
-    inserted, updated = repo.upsert_calls(calls)
+    # Upsert to database (preserves status on conflict)
+    total, inserted = repo.upsert_calls(calls)
 
-    logger.info(f"Upserted {inserted} calls (deduped from {len(records)} records)")
+    logger.info(f"Processed {total} calls: {inserted} new, {total - inserted} updated")
 
     return len(records), inserted
 
 
 # =============================================================================
+# BACKFILL LOGIC
+# =============================================================================
+def run_backfill(
+    repo: IngestRepository,
+    account_id: str,
+    token: str,
+    start_time: datetime,
+    end_time: datetime,
+    chunk_hours: int = 24,
+) -> tuple[int, int]:
+    """
+    Run backfill for a date range, chunked into smaller windows.
+
+    Args:
+        repo: Ingest repository
+        account_id: Ringba account ID
+        token: Ringba API token
+        start_time: Start of backfill window
+        end_time: End of backfill window
+        chunk_hours: Size of each chunk in hours (default 24)
+
+    Returns:
+        Tuple of (total_fetched, total_inserted)
+    """
+    total_fetched = 0
+    total_inserted = 0
+    chunk_count = 0
+
+    current_start = start_time
+    chunk_delta = timedelta(hours=chunk_hours)
+
+    logger.info(f"Backfill: {start_time.strftime('%Y-%m-%d %H:%M')} -> {end_time.strftime('%Y-%m-%d %H:%M')} UTC")
+    logger.info(f"Chunk size: {chunk_hours} hours")
+
+    while current_start < end_time:
+        current_end = min(current_start + chunk_delta, end_time)
+        chunk_count += 1
+
+        logger.info(f"[Chunk {chunk_count}] {current_start.strftime('%Y-%m-%d %H:%M')} -> {current_end.strftime('%Y-%m-%d %H:%M')}")
+
+        try:
+            # Fetch from Ringba
+            records = fetch_ringba_calls(account_id, token, current_start, current_end)
+
+            if records:
+                logger.info(f"  Fetched {len(records)} records")
+
+                # Process campaigns and map calls
+                calls = []
+                for record in records:
+                    ringba_call_id = record.get("inboundCallId")
+                    if not ringba_call_id:
+                        continue
+
+                    campaign_id = None
+                    ringba_campaign_id = record.get("campaignId")
+                    if ringba_campaign_id:
+                        campaign_id = repo.ensure_campaign(
+                            ringba_campaign_id,
+                            record.get("campaignName", "Unknown"),
+                            DEFAULT_ORG_ID,
+                        )
+
+                    call = map_ringba_to_call(record, DEFAULT_ORG_ID, campaign_id)
+                    calls.append(call)
+
+                # Upsert to database
+                total, inserted = repo.upsert_calls(calls)
+                total_fetched += len(records)
+                total_inserted += inserted
+
+                logger.info(f"  Processed: {inserted} new, {total - inserted} existing")
+            else:
+                logger.info("  No records in this chunk")
+
+            # Rate limiting: 1 second between chunks to avoid Ringba throttling
+            time.sleep(1)
+
+        except Exception as e:
+            logger.error(f"  Error in chunk {chunk_count}: {e}")
+            # Continue to next chunk
+
+        current_start = current_end
+
+    return total_fetched, total_inserted
+
+
+# =============================================================================
 # MAIN LOOP
 # =============================================================================
+def parse_args():
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(
+        description="CallScript V2 Ingest Worker",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "--backfill",
+        action="store_true",
+        help="Run in backfill mode (one-time, then exit)",
+    )
+    parser.add_argument(
+        "--hours",
+        type=int,
+        help="Backfill last N hours (e.g., --hours 24)",
+    )
+    parser.add_argument(
+        "--days",
+        type=int,
+        help="Backfill last N days (e.g., --days 7)",
+    )
+    parser.add_argument(
+        "--start",
+        type=str,
+        help="Backfill start date (YYYY-MM-DD or YYYY-MM-DD HH:MM)",
+    )
+    parser.add_argument(
+        "--end",
+        type=str,
+        help="Backfill end date (YYYY-MM-DD or YYYY-MM-DD HH:MM)",
+    )
+    parser.add_argument(
+        "--chunk-hours",
+        type=int,
+        default=24,
+        help="Chunk size in hours for backfill (default: 24)",
+    )
+    return parser.parse_args()
+
+
+def parse_datetime(date_str: str) -> datetime:
+    """Parse datetime string in various formats."""
+    formats = [
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%Y-%m-%d",
+    ]
+    for fmt in formats:
+        try:
+            dt = datetime.strptime(date_str, fmt)
+            return dt.replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+    raise ValueError(f"Could not parse date: {date_str}")
+
+
 def main():
     """Main worker entry point."""
     global logger
+
+    args = parse_args()
 
     # Initialize settings and logging
     settings = get_settings()
     logger = setup_logging("ingest", f"{settings.log_dir}/ingest.log", settings.log_level)
 
     logger.info("=" * 60)
-    logger.info("CallScript V2 Ingest Worker Starting")
+    if args.backfill:
+        logger.info("CallScript V2 Ingest Worker - BACKFILL MODE")
+    else:
+        logger.info("CallScript V2 Ingest Worker Starting")
     logger.info("=" * 60)
 
     # Setup signal handlers
@@ -482,38 +654,76 @@ def main():
         logger.critical(f"Failed to connect to Supabase: {e}")
         sys.exit(1)
 
-    # Verify default org exists
-    try:
-        org_id = repo.get_default_org_id()
-        logger.info(f"Default org: {org_id}")
-    except ValueError as e:
-        logger.critical(str(e))
-        sys.exit(1)
+    # Log configuration
+    logger.info(f"Default org_id: {DEFAULT_ORG_ID}")
 
     # Log initial stats
     stats = repo.get_queue_stats()
-    logger.info(f"Queue stats: pending={stats.get('pending', 0)}, total={sum(stats.values())}")
-    logger.info(f"Config: interval={SYNC_INTERVAL}s, lookback={LOOKBACK_MINUTES}min")
+    logger.info(f"Queue stats: pending={stats.get('pending', 0)}, total={sum(v for v in stats.values() if v > 0)}")
     logger.info("=" * 60)
 
-    # Main loop
+    # ==========================================================================
+    # BACKFILL MODE
+    # ==========================================================================
+    if args.backfill:
+        now = datetime.now(timezone.utc)
+
+        # Determine time range
+        if args.start and args.end:
+            start_time = parse_datetime(args.start)
+            end_time = parse_datetime(args.end)
+        elif args.hours:
+            end_time = now
+            start_time = now - timedelta(hours=args.hours)
+        elif args.days:
+            end_time = now
+            start_time = now - timedelta(days=args.days)
+        else:
+            logger.error("Backfill mode requires --hours, --days, or --start/--end")
+            sys.exit(1)
+
+        # Run backfill
+        total_fetched, total_inserted = run_backfill(
+            repo,
+            account_id,
+            token,
+            start_time,
+            end_time,
+            chunk_hours=args.chunk_hours,
+        )
+
+        # Summary
+        logger.info("=" * 60)
+        logger.info("BACKFILL COMPLETE")
+        logger.info(f"Total fetched: {total_fetched}")
+        logger.info(f"Total inserted: {total_inserted}")
+        stats = repo.get_queue_stats()
+        logger.info(f"Queue stats: pending={stats.get('pending', 0)}, total={sum(v for v in stats.values() if v > 0)}")
+        logger.info("=" * 60)
+        return
+
+    # ==========================================================================
+    # NORMAL MODE (continuous loop)
+    # ==========================================================================
+    logger.info(f"Config: interval={SYNC_INTERVAL}s, lookback={LOOKBACK_MINUTES}min")
+
     total_fetched = 0
-    total_upserted = 0
+    total_inserted = 0
     sync_count = 0
 
     while not shutdown_requested:
         try:
             sync_count += 1
-            fetched, upserted = run_sync_cycle(repo, account_id, token)
+            fetched, inserted = run_sync_cycle(repo, account_id, token)
 
             total_fetched += fetched
-            total_upserted += upserted
+            total_inserted += inserted
 
             # Log milestone every 10 syncs
             if sync_count % 10 == 0:
                 stats = repo.get_queue_stats()
                 logger.info(
-                    f"Sync #{sync_count} | Total: {total_fetched} fetched, {total_upserted} upserted | "
+                    f"Sync #{sync_count} | Session: {total_fetched} fetched, {total_inserted} inserted | "
                     f"Pending: {stats.get('pending', 0)}"
                 )
 
@@ -540,7 +750,7 @@ def main():
     logger.info("Ingest Worker Shutdown")
     logger.info(f"Total syncs: {sync_count}")
     logger.info(f"Total fetched: {total_fetched}")
-    logger.info(f"Total upserted: {total_upserted}")
+    logger.info(f"Total inserted: {total_inserted}")
     logger.info("=" * 60)
 
 

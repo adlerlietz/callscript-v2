@@ -3,6 +3,7 @@
 # Core
 pydantic>=2.0
 pydantic-settings>=2.0
+requests>=2.28
 
 # Database
 supabase>=2.0

@@ -21,7 +21,8 @@ set -euo pipefail
 # =============================================================================
 readonly FACTORY_WORKER_COUNT=4
 readonly FACTORY_SCRIPT="/workspace/workers/factory/worker.py"
-readonly JUDGE_SCRIPT="/workspace/workers/judge.py"
+readonly VAULT_SCRIPT="/workspace/workers/vault/worker.py"
+readonly JUDGE_SCRIPT="/workspace/workers/judge/worker.py"
 readonly ENV_FILE="/workspace/.env"
 readonly LOG_DIR="/workspace/logs"
 readonly PID_DIR="/workspace/pids"
@@ -75,7 +76,7 @@ get_factory_pids() {
 
 # Get PID of running Judge worker (exclude bash wrapper)
 get_judge_pid() {
-    pgrep -f "python3.*judge.py" 2>/dev/null | grep -v "^$$" | tail -1 || true
+    pgrep -f "python3.*judge/worker.py" 2>/dev/null | grep -v "^$$" | tail -1 || true
 }
 
 # Count running Factory workers

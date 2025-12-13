@@ -175,14 +175,25 @@ def save_qa_results(call_id: str, analysis: QAAnalysis) -> bool:
 def process_call(call: Dict[str, Any]) -> bool:
     """Process a single call through the judge pipeline"""
     call_id = call["id"]
-    transcript = call["transcript_text"]
+    transcript = call.get("transcript_text") or ""
     start_time = call["start_time_utc"]
 
     log(f"Processing call {call_id[:8]}... (from {start_time})", "⚖️")
 
-    if not transcript or len(transcript.strip()) < 10:
-        log(f"Skipping call {call_id[:8]}: transcript too short", "⚠️")
-        return False
+    if len(transcript.strip()) < 50:
+        log(f"Marking call {call_id[:8]} as safe: transcript too short ({len(transcript)} chars)", "⚠️")
+        # Mark as safe with skip reason so it doesn't get re-fetched
+        supabase.schema("core").table("calls") \
+            .update({
+                "qa_flags": {"skipped": True, "reason": "transcript_too_short", "length": len(transcript)},
+                "qa_version": QA_VERSION,
+                "judge_model": "skip",
+                "status": "safe",
+                "updated_at": datetime.utcnow().isoformat()
+            }) \
+            .eq("id", call_id) \
+            .execute()
+        return True  # Counts as processed
 
     try:
         # Analyze with GPT-4o

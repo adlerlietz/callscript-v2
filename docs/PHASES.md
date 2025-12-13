@@ -1,6 +1,6 @@
 # CallScript V2 – Build Phases & Checklist
 
-This doc is a simple checklist of what we’re building and in what order.
+This doc is a simple checklist of what we're building and in what order.
 
 ---
 
@@ -15,45 +15,68 @@ This doc is a simple checklist of what we’re building and in what order.
 
 ---
 
-## Phase 1 – Supabase Schema & Migrations (🚧 In Progress)
+## Phase 1 – Supabase Schema & Migrations (✅ Done)
 
 Goal: Have a clean `core` schema with tables, indexes, triggers, cron jobs.
 
-- [ ] 00_extensions.sql – enable pgcrypto, pg_cron, pg_net
-- [ ] 01_schema.sql – create core schema
-- [ ] 02_tables.sql – create core.campaigns and core.calls
-- [ ] 03_indexes.sql – create LIFO queue and helper indexes
-- [ ] 04_triggers.sql – updated_at triggers, auto-tag campaigns, zombie killer
-- [ ] 05_cron.sql – wire zombie killer into pg_cron
+- [x] 00_extensions.sql – enable pgcrypto, pg_cron, pg_net
+- [x] 01_schema.sql – create core schema
+- [x] 02_tables.sql – create core.campaigns and core.calls
+- [x] 03_indexes.sql – create LIFO queue and helper indexes
+- [x] 04_triggers.sql – updated_at triggers, auto-tag campaigns, zombie killer
+- [x] 05_cron.sql – wire zombie killer into pg_cron
 
-Exit criteria:
+Exit criteria: ✅ All met
 - All migrations run successfully in Supabase
 - Inserting sample rows into core.calls respects constraints
 - idx_calls_queue exists and supports LIFO queries
 
 ---
 
-## Phase 2 – Edge Functions (Ingest, Vault, Judge)
+## Phase 2 – Edge Functions (Ingest, Vault, Judge) (✅ Done)
 
-- [ ] supabase/functions/sync-ringba/index.ts
-- [ ] supabase/functions/recording-watcher/index.ts
-- [ ] supabase/functions/analyze-qa/index.ts
+- [x] supabase/functions/sync-ringba-realtime/index.ts (Ingest Lane)
+- [x] supabase/functions/recording-watcher/index.ts (Vault Lane)
+- [ ] supabase/functions/analyze-qa/index.ts (Judge Lane - pending)
 
 Exit: calls flow from pending → downloaded → transcribed → flagged/safe when functions are invoked.
 
 ---
 
-## Phase 3 – RunPod Worker (Factory Lane)
+## Phase 3 – Multi-Tenant Architecture (✅ Done)
 
-- [ ] runpod-worker/start.sh
-- [ ] runpod-worker/worker.py
-- [ ] runpod-worker/start_factory.sh
+Goal: Support multiple organizations with isolated data and credentials.
+
+- [x] 12_queue_alerts.sql – Slack alerting for queue health
+- [x] 13_organizations.sql – Create organizations, organization_members, organization_credentials tables
+- [x] 14_add_org_id.sql – Add org_id to campaigns and calls
+- [x] 15_org_indexes.sql – Create composite indexes for tenant + LIFO
+- [x] 16_rls_policies.sql – Row-Level Security for tenant isolation
+- [x] 17_vault_functions.sql – Credential storage/retrieval functions
+- [x] supabase/functions/auth-hook/index.ts – JWT org_id injection
+- [x] supabase/functions/onboard-org/index.ts – User onboarding flow
+- [x] Update sync-ringba-realtime with org_id support
+
+Exit criteria: ✅ All met
+- RLS enforces tenant isolation
+- Each org has isolated Ringba credentials
+- Auth hook injects org_id into JWT
+- Sync function tags calls with correct org_id
+
+---
+
+## Phase 4 – RunPod Worker (Factory Lane) (🚧 In Progress)
+
+- [x] workers/core/ – Core database and queue modules
+- [x] workers/factory/ – Transcription worker structure
+- [ ] Full GPU worker integration with WhisperX/Pyannote
+- [ ] workers/start_factory.sh
 
 Exit: downloaded calls get transcribed on GPU and marked transcribed.
 
 ---
 
-## Phase 4 – Next.js Frontend Skeleton
+## Phase 5 – Next.js Frontend Skeleton
 
 - [ ] app/layout.tsx
 - [ ] app/page.tsx
@@ -66,13 +89,12 @@ Exit: `npm run dev` shows all routes without runtime errors.
 
 ---
 
-## Phase 5 – Ops Scripts & Backfill
+## Phase 6 – Ops Scripts & Backfill
 
 - [ ] scripts/backfill_ringba.ts
 
 ---
 
-## Phase 6 – Polish & Launch
+## Phase 7 – Polish & Launch
 
 - [ ] Filters, AI flags in UI, scrubber, etc.
-

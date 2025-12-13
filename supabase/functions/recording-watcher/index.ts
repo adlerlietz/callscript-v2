@@ -37,6 +37,73 @@ function getStoragePath(callId: string, timestamp: string): string {
 }
 
 /**
+ * Fetch audio with retry and fallback logic.
+ * Handles transient failures and 404s gracefully.
+ */
+async function fetchAudioWithRetry(
+  url: string,
+  callId: string,
+  maxRetries: number = 3
+): Promise<Response | null> {
+  let lastError: string = "";
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 60000); // 60s timeout
+
+      const response = await fetch(url, {
+        method: "GET",
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeout);
+
+      if (response.ok) {
+        return response;
+      }
+
+      // Permanent failures - don't retry
+      if (response.status === 404 || response.status === 403 || response.status === 410) {
+        console.warn(`⚠️ Audio permanently unavailable for ${callId}: HTTP ${response.status}`);
+        return null;
+      }
+
+      // Transient failures - retry with backoff
+      if (response.status >= 500 || response.status === 429) {
+        const waitTime = Math.min(1000 * Math.pow(2, attempt), 10000);
+        console.log(`⚠️ Audio fetch ${response.status}, retry ${attempt}/${maxRetries} in ${waitTime}ms`);
+        await new Promise(r => setTimeout(r, waitTime));
+        continue;
+      }
+
+      lastError = `HTTP ${response.status}: ${response.statusText}`;
+
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+
+      if (error instanceof Error && error.name === "AbortError") {
+        console.log(`⚠️ Audio fetch timeout for ${callId}, retry ${attempt}/${maxRetries}`);
+        if (attempt < maxRetries) {
+          await new Promise(r => setTimeout(r, 2000));
+          continue;
+        }
+      }
+
+      // Network errors - retry
+      if (attempt < maxRetries) {
+        const waitTime = Math.min(1000 * Math.pow(2, attempt), 10000);
+        console.log(`⚠️ Audio fetch error: ${lastError}, retry in ${waitTime}ms`);
+        await new Promise(r => setTimeout(r, waitTime));
+        continue;
+      }
+    }
+  }
+
+  throw new Error(`Audio fetch failed after ${maxRetries} attempts: ${lastError}`);
+}
+
+/**
  * Process a single call: Download audio → Upload to Storage → Update DB
  */
 async function processCall(call: CallRecord): Promise<void> {
@@ -45,14 +112,21 @@ async function processCall(call: CallRecord): Promise<void> {
   try {
     console.log(`📦 Processing call ${call.ringba_call_id}`);
 
-    // Fetch audio from Ringba
-    const audioResp = await fetch(call.audio_url, {
-      method: "GET",
-      signal: AbortSignal.timeout(60000), // 60s timeout
-    });
+    // Fetch audio from Ringba with retry logic
+    const audioResp = await fetchAudioWithRetry(call.audio_url, call.ringba_call_id);
 
-    if (!audioResp.ok) {
-      throw new Error(`HTTP ${audioResp.status}: ${audioResp.statusText}`);
+    // Handle permanent 404/403/410 - mark as failed, don't retry
+    if (audioResp === null) {
+      console.warn(`⚠️ Audio not available for ${call.ringba_call_id}, marking as failed`);
+      await supabase
+        .from("calls")
+        .update({
+          status: "failed",
+          processing_error: "Audio file not available (404/403/410)",
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", call.id);
+      return;
     }
 
     // VALIDATION: Check Content-Length
@@ -83,15 +157,16 @@ async function processCall(call: CallRecord): Promise<void> {
       throw new Error(`Storage upload failed: ${uploadError.message}`);
     }
 
-    // COST OPTIMIZATION: Skip AI for very short calls (< 15 seconds)
-    if (call.duration_seconds !== null && call.duration_seconds < 15) {
-      console.log(`⏭️ Skipping AI for short call ${call.ringba_call_id} (${call.duration_seconds}s)`);
+    // COST OPTIMIZATION: Skip AI for very short calls (< 5 seconds)
+    // These are dial tones, wrong numbers, immediate hang-ups
+    if (call.duration_seconds !== null && call.duration_seconds < 5) {
+      console.log(`⏭️ Skipping AI for very short call ${call.ringba_call_id} (${call.duration_seconds}s)`);
       await supabase
         .from("calls")
         .update({
           storage_path: storagePath,
           status: "safe",
-          processing_error: "Auto-marked safe: duration < 15s",
+          processing_error: "Auto-marked safe: duration < 5s",
           updated_at: new Date().toISOString(),
         })
         .eq("id", call.id);

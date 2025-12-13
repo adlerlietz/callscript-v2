@@ -1,0 +1,19 @@
+# CallScript V2 Worker Dependencies
+
+# Core
+pydantic>=2.0
+pydantic-settings>=2.0
+
+# Database
+supabase>=2.0
+
+# Retry logic
+tenacity>=8.0
+
+# ML/AI (Factory Lane)
+torch>=2.0
+nemo_toolkit[asr]>=1.20
+pyannote.audio>=3.1
+
+# AI (Judge Lane)
+openai>=1.0

@@ -1,26 +1,29 @@
 #!/usr/bin/env python3
 """
-CallScript V2 - Judge Lane Worker
+CallScript V2 - Judge Lane Worker (Turbo Edition)
 
 Analyzes transcribed calls using GPT-4o-mini to detect compliance violations,
 score quality, and flag problematic calls for review.
 
 Architecture:
-- Sequential processing: 1 call at a time (API calls are fast)
+- Batch processing: Fetches 10 calls at a time
+- Multithreaded: ThreadPoolExecutor for parallel OpenAI API calls
+- Atomic locking: Uses qa_flags as lock to prevent duplicate processing
 - Structured outputs: Pydantic models for type-safe responses
 - Automatic retries: tenacity handles rate limits and transient errors
-- Cost control: Skips transcripts under 50 characters
+
+Performance: ~200+ calls/hour (vs ~20/hour sequential)
 
 Server: RunPod (Ubuntu 22.04) or any Linux server
 Database: Supabase (PostgreSQL)
 AI: OpenAI GPT-4o-mini
 """
 
-import json
 import logging
 import signal
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -44,8 +47,10 @@ from workers.core import get_settings, setup_logging
 # CONFIGURATION
 # =============================================================================
 MODEL_NAME = "gpt-4o-mini"
-QA_VERSION = "v2.0"
-POLL_INTERVAL = 5  # Seconds to wait when queue is empty
+QA_VERSION = "v2.1-turbo"
+BATCH_SIZE = 10  # Calls to fetch per batch
+MAX_WORKERS = 10  # Concurrent OpenAI API threads
+POLL_INTERVAL = 2  # Seconds to wait when queue is empty
 MIN_TRANSCRIPT_LENGTH = 50  # Skip transcripts shorter than this
 FLAG_THRESHOLD = 70  # Score below this = flagged
 
@@ -60,7 +65,7 @@ def signal_handler(sig, frame):
     """Handle graceful shutdown."""
     global shutdown_requested
     shutdown_requested = True
-    logger.info("Shutdown signal received, finishing current call...")
+    logger.info("Shutdown signal received, finishing current batch...")
 
 
 # =============================================================================
@@ -151,9 +156,9 @@ class JudgeRepository:
     Repository for Judge Lane operations.
 
     Handles:
-    - Fetching transcribed calls ready for QA
+    - Fetching and locking batches of transcribed calls
     - Saving QA analysis results
-    - Marking calls as skipped
+    - Marking calls as skipped or failed
     """
 
     def __init__(self, client):
@@ -166,32 +171,67 @@ class JudgeRepository:
         self.client = client
         self.schema = client.schema("core")
 
-    def fetch_next_transcribed_call(self) -> Optional[dict[str, Any]]:
+    def fetch_and_lock_batch(self, limit: int = BATCH_SIZE) -> list[dict[str, Any]]:
         """
-        Fetch next transcribed call ready for QA analysis.
+        Fetch and atomically lock a batch of transcribed calls for QA analysis.
 
-        Query logic:
-        - status = 'transcribed'
-        - qa_flags IS NULL (not yet judged)
-        - ORDER BY start_time_utc DESC (LIFO - newest first)
+        Uses qa_flags as a lock marker to prevent race conditions.
+        Only fetches calls where qa_flags IS NULL (not yet claimed).
+
+        Args:
+            limit: Maximum calls to fetch
 
         Returns:
-            Call dict or None if queue empty
+            List of successfully locked call dicts
         """
+        locked_calls = []
+
         try:
+            # Step 1: Fetch candidate calls
             response = (
                 self.schema
                 .from_("calls")
                 .select("id, transcript_text, transcript_segments, start_time_utc, duration_seconds")
                 .eq("status", "transcribed")
-                .is_("qa_flags", "null")
+                .is_("qa_flags", "null")  # postgrest-py uses "null" string for IS NULL
                 .order("start_time_utc", desc=True)
-                .limit(1)
+                .limit(limit)
                 .execute()
             )
-            return response.data[0] if response.data else None
+
+            logger.debug(f"Fetched {len(response.data) if response.data else 0} candidate calls")
+
+            if not response.data:
+                return []
+
+            # Step 2: Try to lock each call atomically
+            lock_time = datetime.now(timezone.utc).isoformat()
+
+            for call in response.data:
+                call_id = call["id"]
+
+                # Atomic lock: only succeeds if qa_flags is still NULL
+                lock_response = (
+                    self.schema
+                    .from_("calls")
+                    .update({
+                        "qa_flags": {"_locked": True, "_locked_at": lock_time},
+                        "updated_at": lock_time,
+                    })
+                    .eq("id", call_id)
+                    .eq("status", "transcribed")
+                    .is_("qa_flags", "null")
+                    .execute()
+                )
+
+                if lock_response.data:
+                    locked_calls.append(call)
+                    logger.debug(f"Locked: {call_id[:8]}...")
+
+            return locked_calls
+
         except Exception as e:
-            logger.error(f"Failed to fetch next transcribed call: {e}")
+            logger.error(f"Failed to fetch/lock batch: {e}")
             raise
 
     def save_qa_results(
@@ -233,9 +273,8 @@ class JudgeRepository:
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             }).eq("id", call_id).execute()
 
-            logger.info(
-                f"Saved QA: {call_id[:8]}... | Score={analysis.score} | "
-                f"Status={new_status} | Issues={len(analysis.issues)}"
+            logger.debug(
+                f"Saved: {call_id[:8]}... | Score={analysis.score} | Status={new_status}"
             )
         except Exception as e:
             logger.error(f"Failed to save QA results for {call_id}: {e}")
@@ -266,7 +305,7 @@ class JudgeRepository:
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             }).eq("id", call_id).execute()
 
-            logger.warning(f"Skipped: {call_id[:8]}... | Reason={reason}")
+            logger.debug(f"Skipped: {call_id[:8]}... | Reason={reason}")
         except Exception as e:
             logger.error(f"Failed to mark {call_id} as skipped: {e}")
 
@@ -282,10 +321,11 @@ class JudgeRepository:
             self.schema.from_("calls").update({
                 "status": "failed",
                 "processing_error": error[:500],
+                "qa_flags": {"error": error[:200], "failed_at": datetime.now(timezone.utc).isoformat()},
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             }).eq("id", call_id).execute()
 
-            logger.error(f"Failed: {call_id[:8]}... | Error={error[:100]}")
+            logger.warning(f"Failed: {call_id[:8]}... | {error[:50]}")
         except Exception as e:
             logger.error(f"Failed to mark {call_id} as failed: {e}")
 
@@ -338,8 +378,6 @@ def analyze_with_gpt(
     Raises:
         Exception: If all retries fail
     """
-    logger.debug(f"Sending to GPT-4o-mini ({len(transcript)} chars)...")
-
     completion = openai_client.beta.chat.completions.parse(
         model=MODEL_NAME,
         messages=[
@@ -356,20 +394,21 @@ def analyze_with_gpt(
     if analysis is None:
         raise ValueError("GPT returned None - parsing failed")
 
-    logger.debug(f"GPT response: Score={analysis.score}, Flagged={analysis.flagged}")
     return analysis
 
 
 # =============================================================================
 # CALL PROCESSING
 # =============================================================================
-def process_call(
+def process_single_call(
     call: dict[str, Any],
     repo: JudgeRepository,
     openai_client: OpenAI,
-) -> bool:
+) -> tuple[str, bool, str]:
     """
     Process a single call through the QA pipeline.
+
+    Designed to be called from a thread pool.
 
     Args:
         call: Call dict with id, transcript_text, etc.
@@ -377,13 +416,10 @@ def process_call(
         openai_client: OpenAI client
 
     Returns:
-        True if processed successfully, False otherwise
+        Tuple of (call_id, success, status_or_error)
     """
     call_id = call["id"]
     transcript = call.get("transcript_text") or ""
-    duration = call.get("duration_seconds", 0)
-
-    logger.info(f"Processing: {call_id[:8]}... | Duration={duration}s | Transcript={len(transcript)} chars")
 
     # Cost control: Skip very short transcripts
     if len(transcript.strip()) < MIN_TRANSCRIPT_LENGTH:
@@ -392,7 +428,7 @@ def process_call(
             reason="transcript_too_short",
             transcript_length=len(transcript),
         )
-        return True  # Counts as processed
+        return (call_id, True, "skipped")
 
     try:
         # Analyze with GPT-4o-mini
@@ -401,21 +437,71 @@ def process_call(
         # Save results
         repo.save_qa_results(call_id, analysis)
 
-        return True
+        status = "flagged" if analysis.flagged or analysis.score < FLAG_THRESHOLD else "safe"
+        return (call_id, True, status)
 
     except (RateLimitError, APIConnectionError, APIError) as e:
         # OpenAI API error after all retries
-        error_msg = f"OpenAI API error after retries: {str(e)[:200]}"
-        logger.error(f"{call_id[:8]}...: {error_msg}")
+        error_msg = f"OpenAI API error: {str(e)[:100]}"
         repo.mark_failed(call_id, error_msg)
-        return False
+        return (call_id, False, error_msg)
 
     except Exception as e:
         # Unexpected error
-        error_msg = f"Unexpected error: {str(e)[:200]}"
-        logger.error(f"{call_id[:8]}...: {error_msg}")
+        error_msg = f"Error: {str(e)[:100]}"
         repo.mark_failed(call_id, error_msg)
-        return False
+        return (call_id, False, error_msg)
+
+
+def process_batch(
+    calls: list[dict[str, Any]],
+    repo: JudgeRepository,
+    openai_client: OpenAI,
+    max_workers: int = MAX_WORKERS,
+) -> tuple[int, int, int, int]:
+    """
+    Process a batch of calls concurrently using thread pool.
+
+    Args:
+        calls: List of call dicts
+        repo: Judge repository
+        openai_client: OpenAI client
+        max_workers: Maximum concurrent threads
+
+    Returns:
+        Tuple of (success_count, failed_count, flagged_count, safe_count)
+    """
+    success_count = 0
+    failed_count = 0
+    flagged_count = 0
+    safe_count = 0
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Submit all calls to thread pool
+        futures = {
+            executor.submit(process_single_call, call, repo, openai_client): call["id"]
+            for call in calls
+        }
+
+        # Collect results as they complete
+        for future in as_completed(futures):
+            call_id = futures[future]
+            try:
+                _, success, status = future.result()
+                if success:
+                    success_count += 1
+                    if status == "flagged":
+                        flagged_count += 1
+                    elif status == "safe":
+                        safe_count += 1
+                    # "skipped" counts as success but not flagged/safe
+                else:
+                    failed_count += 1
+            except Exception as e:
+                logger.error(f"Thread error for {call_id[:8]}...: {e}")
+                failed_count += 1
+
+    return success_count, failed_count, flagged_count, safe_count
 
 
 # =============================================================================
@@ -430,7 +516,7 @@ def main():
     logger = setup_logging("judge", f"{settings.log_dir}/judge.log", settings.log_level)
 
     logger.info("=" * 60)
-    logger.info("CallScript V2 Judge Worker Starting")
+    logger.info("CallScript V2 Judge Worker (Turbo Edition)")
     logger.info("=" * 60)
 
     # Setup signal handlers
@@ -453,45 +539,53 @@ def main():
 
     # Log initial stats
     stats = repo.get_queue_stats()
-    logger.info(f"Queue stats: transcribed={stats.get('transcribed', 0)}, flagged={stats.get('flagged', 0)}, safe={stats.get('safe', 0)}")
-    logger.info(f"Config: model={MODEL_NAME}, qa_version={QA_VERSION}, flag_threshold={FLAG_THRESHOLD}")
+    logger.info(f"Queue: transcribed={stats.get('transcribed', 0)}, flagged={stats.get('flagged', 0)}, safe={stats.get('safe', 0)}")
+    logger.info(f"Config: batch={BATCH_SIZE}, threads={MAX_WORKERS}, model={MODEL_NAME}")
     logger.info("=" * 60)
 
     # Main loop
-    total_processed = 0
+    total_success = 0
+    total_failed = 0
     total_flagged = 0
     total_safe = 0
-    total_failed = 0
+    batch_count = 0
 
     while not shutdown_requested:
         try:
-            # Fetch next transcribed call
-            call = repo.fetch_next_transcribed_call()
+            # Fetch and lock batch of transcribed calls
+            calls = repo.fetch_and_lock_batch(limit=BATCH_SIZE)
 
-            if call is None:
+            if not calls:
                 # Queue empty - wait and retry
-                logger.debug(f"Queue empty, waiting {POLL_INTERVAL}s...")
+                logger.debug("No calls to process, waiting...")
                 time.sleep(POLL_INTERVAL)
                 continue
 
-            # Process the call
-            success = process_call(call, repo, openai_client)
+            batch_count += 1
+            logger.info(f"Batch {batch_count}: Processing {len(calls)} calls...")
 
-            if success:
-                total_processed += 1
+            # Process batch concurrently
+            success, failed, flagged, safe = process_batch(
+                calls, repo, openai_client, MAX_WORKERS
+            )
 
-                # Track flagged vs safe (approximation based on last save)
-                # Real counts come from get_queue_stats()
+            total_success += success
+            total_failed += failed
+            total_flagged += flagged
+            total_safe += safe
 
-                # Log milestone every 50 calls
-                if total_processed % 50 == 0:
-                    stats = repo.get_queue_stats()
-                    logger.info(
-                        f"Milestone: {total_processed} processed | "
-                        f"Flagged={stats.get('flagged', 0)} | Safe={stats.get('safe', 0)}"
-                    )
-            else:
-                total_failed += 1
+            logger.info(
+                f"Batch {batch_count} complete: {success} OK, {failed} failed "
+                f"| flagged={flagged}, safe={safe}"
+            )
+
+            # Log milestone every 100 successful calls
+            if total_success > 0 and total_success % 100 < BATCH_SIZE:
+                stats = repo.get_queue_stats()
+                logger.info(
+                    f"=== Milestone: {total_success} processed | "
+                    f"Queue: {stats.get('transcribed', 0)} remaining ==="
+                )
 
         except KeyboardInterrupt:
             logger.info("Interrupted by user")
@@ -499,14 +593,14 @@ def main():
 
         except Exception as e:
             logger.error(f"Unexpected error in main loop: {e}")
-            total_failed += 1
-            time.sleep(POLL_INTERVAL)
+            time.sleep(5)  # Back off on errors
 
     # Shutdown summary
     logger.info("=" * 60)
-    logger.info("Judge Worker Shutdown")
-    logger.info(f"Total processed: {total_processed}")
-    logger.info(f"Total failed: {total_failed}")
+    logger.info("Judge Worker Shutdown (Turbo Edition)")
+    logger.info(f"Total: {total_success} success, {total_failed} failed")
+    logger.info(f"Results: {total_flagged} flagged, {total_safe} safe")
+    logger.info(f"Batches: {batch_count}")
     logger.info("=" * 60)
 
 

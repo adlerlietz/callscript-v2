@@ -6,6 +6,9 @@ from .models import (
     load_asr_model,
     load_diarization_pipeline,
     verify_gpu_available,
+    get_gpu_memory_free,
+    check_memory_for_processing,
+    get_audio_duration,
     transcribe,
     diarize,
 )
@@ -28,6 +31,9 @@ __all__ = [
     "load_asr_model",
     "load_diarization_pipeline",
     "verify_gpu_available",
+    "get_gpu_memory_free",
+    "check_memory_for_processing",
+    "get_audio_duration",
     "transcribe",
     "diarize",
     # Database

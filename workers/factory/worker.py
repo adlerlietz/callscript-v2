@@ -32,6 +32,9 @@ from workers.core import (
     load_asr_model,
     load_diarization_pipeline,
     verify_gpu_available,
+    get_gpu_memory_free,
+    check_memory_for_processing,
+    get_audio_duration,
     transcribe,
     diarize,
     CallsRepository,
@@ -136,6 +139,24 @@ def process_call(
         # -----------------------------------------------------------------
         convert_to_wav(local_mp3, local_wav)
         logger.info("Converted to 16kHz mono WAV")
+
+        # -----------------------------------------------------------------
+        # Step 3.5: Memory check before heavy processing
+        # -----------------------------------------------------------------
+        audio_duration = get_audio_duration(local_wav)
+        if audio_duration > 0:
+            logger.info(f"Audio duration: {audio_duration:.1f}s")
+
+            if not check_memory_for_processing(audio_duration):
+                # Memory too low - release lock and let another worker try
+                # or wait for memory to free up
+                logger.warning(
+                    f"Skipping {call_id} due to low GPU memory "
+                    f"(duration: {audio_duration:.1f}s) - will retry later"
+                )
+                # Reset status back to downloaded so it can be picked up again
+                repo.release_call(call_id)
+                return False
 
         # -----------------------------------------------------------------
         # Step 4: Transcribe

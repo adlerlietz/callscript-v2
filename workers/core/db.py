@@ -117,6 +117,43 @@ class CallsRepository:
             logger.error(f"Failed to lock call {call_id}: {e}")
             raise
 
+    def release_call(self, call_id: str) -> bool:
+        """
+        Release a locked call back to the queue without incrementing retry count.
+
+        Used when a worker cannot process a call due to resource constraints
+        (e.g., low GPU memory) but the call itself is not problematic.
+
+        Args:
+            call_id: UUID of the call to release
+
+        Returns:
+            True if release successful, False otherwise
+        """
+        try:
+            response = (
+                self.schema
+                .from_("calls")
+                .update({
+                    "status": "downloaded",
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                })
+                .eq("id", call_id)
+                .eq("status", "processing")  # Only release if we own it
+                .execute()
+            )
+
+            if response.data:
+                logger.info(f"Released call {call_id} back to queue (resource constraint)")
+                return True
+            else:
+                logger.warning(f"Could not release call {call_id} - status may have changed")
+                return False
+
+        except Exception as e:
+            logger.error(f"Failed to release call {call_id}: {e}")
+            return False
+
     # =========================================================================
     # RESULT OPERATIONS
     # =========================================================================

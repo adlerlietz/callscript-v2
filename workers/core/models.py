@@ -170,6 +170,70 @@ def verify_gpu_available() -> dict:
     return info
 
 
+def get_gpu_memory_free() -> float:
+    """
+    Get available GPU memory in GB.
+
+    Returns:
+        Free GPU memory in GB
+    """
+    if not torch.cuda.is_available():
+        return 0.0
+
+    # Force synchronization to get accurate reading
+    torch.cuda.synchronize()
+
+    # Get memory info
+    total = torch.cuda.get_device_properties(0).total_memory
+    allocated = torch.cuda.memory_allocated(0)
+    reserved = torch.cuda.memory_reserved(0)
+
+    # Free memory is total minus reserved (reserved includes allocated)
+    free = (total - reserved) / (1024**3)
+
+    return round(free, 2)
+
+
+def check_memory_for_processing(audio_duration_seconds: float, min_free_gb: float = 3.5) -> bool:
+    """
+    Check if there's enough GPU memory to process audio of given duration.
+
+    Diarization of long audio can require 3+ GB of VRAM. This check helps
+    avoid OOM by skipping if memory is too low.
+
+    Args:
+        audio_duration_seconds: Duration of audio to process
+        min_free_gb: Minimum free GPU memory required (default 3.5 GB)
+
+    Returns:
+        True if safe to proceed, False if memory too low
+    """
+    # Clear any cached memory first
+    torch.cuda.empty_cache()
+    gc.collect()
+
+    free_gb = get_gpu_memory_free()
+
+    # Estimate memory requirement based on duration
+    # Long audio (>5 min) needs more due to diarization
+    if audio_duration_seconds > 300:
+        required_gb = 3.5  # Conservative estimate for chunked diarization
+    elif audio_duration_seconds > 180:
+        required_gb = 2.5
+    else:
+        required_gb = 1.5
+
+    if free_gb < required_gb:
+        logger.warning(
+            f"Low GPU memory: {free_gb:.2f}GB free, need ~{required_gb:.1f}GB "
+            f"for {audio_duration_seconds:.0f}s audio"
+        )
+        return False
+
+    logger.debug(f"GPU memory check OK: {free_gb:.2f}GB free, need ~{required_gb:.1f}GB")
+    return True
+
+
 # =============================================================================
 # AUDIO UTILITIES
 # =============================================================================
@@ -488,18 +552,27 @@ def _remove_overlap(prev_text: str, current_text: str, max_overlap_words: int = 
 # DIARIZATION
 # =============================================================================
 
-def diarize(pipeline: "Pipeline", audio_path: str) -> list[dict]:
-    """
-    Run speaker diarization on audio file.
+# Maximum audio duration for single-pass diarization (seconds)
+# Pyannote diarization is MUCH more memory-intensive than transcription
+MAX_DIARIZATION_DURATION_SECONDS = 300  # 5 minutes
 
-    Handles both Pyannote 3.x and 4.x API differences.
+# Chunk size for diarization (smaller than transcription due to memory)
+DIARIZATION_CHUNK_SECONDS = 180  # 3 minutes
+
+# Overlap for diarization chunks (helps with speaker continuity)
+DIARIZATION_OVERLAP_SECONDS = 10
+
+
+def _diarize_single(pipeline: "Pipeline", audio_path: str) -> list[dict]:
+    """
+    Run diarization on a single audio file (internal).
 
     Args:
         pipeline: Loaded diarization pipeline
         audio_path: Path to audio file
 
     Returns:
-        List of segments: [{"start": float, "end": float, "speaker": str}, ...]
+        List of segments
     """
     result = pipeline(audio_path)
     segments = []
@@ -528,3 +601,134 @@ def diarize(pipeline: "Pipeline", audio_path: str) -> list[dict]:
             })
 
     return segments
+
+
+def _merge_diarization_segments(
+    all_segments: list[list[dict]],
+    chunk_offsets: list[float],
+    overlap: float,
+) -> list[dict]:
+    """
+    Merge diarization segments from multiple chunks.
+
+    Handles time offset adjustment and removes duplicate segments
+    from overlap regions.
+
+    Args:
+        all_segments: List of segment lists from each chunk
+        chunk_offsets: Start time offset for each chunk (seconds)
+        overlap: Overlap duration between chunks (seconds)
+
+    Returns:
+        Merged and deduplicated segments
+    """
+    if not all_segments:
+        return []
+
+    merged = []
+
+    for chunk_idx, (segments, offset) in enumerate(zip(all_segments, chunk_offsets)):
+        for seg in segments:
+            # Adjust timestamps by chunk offset
+            adjusted_seg = {
+                "start": round(seg["start"] + offset, 3),
+                "end": round(seg["end"] + offset, 3),
+                "speaker": seg["speaker"],
+            }
+
+            # Skip segments that fall entirely within the overlap region
+            # (except for the first chunk which has no overlap)
+            if chunk_idx > 0 and adjusted_seg["end"] <= offset + overlap:
+                continue
+
+            # For segments that start in overlap, trim them
+            if chunk_idx > 0 and adjusted_seg["start"] < offset + overlap:
+                adjusted_seg["start"] = round(offset + overlap, 3)
+
+            # Only add if segment has positive duration
+            if adjusted_seg["end"] > adjusted_seg["start"]:
+                merged.append(adjusted_seg)
+
+    # Sort by start time
+    merged.sort(key=lambda x: x["start"])
+
+    return merged
+
+
+def diarize(pipeline: "Pipeline", audio_path: str) -> list[dict]:
+    """
+    Run speaker diarization on audio file.
+
+    For long audio files (>5 minutes), automatically splits into chunks
+    to prevent CUDA OOM errors. Pyannote diarization is more memory-intensive
+    than transcription, so we use smaller chunks.
+
+    Args:
+        pipeline: Loaded diarization pipeline
+        audio_path: Path to audio file
+
+    Returns:
+        List of segments: [{"start": float, "end": float, "speaker": str}, ...]
+    """
+    # Check audio duration
+    duration = get_audio_duration(audio_path)
+
+    # Short audio: diarize directly
+    if duration <= MAX_DIARIZATION_DURATION_SECONDS:
+        logger.debug(f"Audio duration {duration:.1f}s <= {MAX_DIARIZATION_DURATION_SECONDS}s, diarizing directly")
+        return _diarize_single(pipeline, audio_path)
+
+    # Long audio: use chunking strategy
+    logger.info(f"Long audio detected ({duration:.1f}s), using chunked diarization")
+
+    chunk_paths = []
+    temp_dir = None
+
+    try:
+        # Split into chunks (smaller than transcription chunks)
+        chunk_paths = split_audio_into_chunks(
+            audio_path,
+            chunk_duration=DIARIZATION_CHUNK_SECONDS,
+            overlap=DIARIZATION_OVERLAP_SECONDS,
+        )
+
+        if chunk_paths:
+            temp_dir = str(Path(chunk_paths[0]).parent)
+
+        # Calculate offsets for each chunk
+        step = DIARIZATION_CHUNK_SECONDS - DIARIZATION_OVERLAP_SECONDS
+        chunk_offsets = [i * step for i in range(len(chunk_paths))]
+
+        # Diarize each chunk
+        all_segments = []
+        for i, chunk_path in enumerate(chunk_paths):
+            logger.info(f"Diarizing chunk {i + 1}/{len(chunk_paths)} (offset: {chunk_offsets[i]:.1f}s)...")
+
+            try:
+                chunk_segments = _diarize_single(pipeline, chunk_path)
+                all_segments.append(chunk_segments)
+                logger.debug(f"Chunk {i + 1} diarized: {len(chunk_segments)} segments")
+            except Exception as e:
+                logger.error(f"Failed to diarize chunk {i + 1}: {e}")
+                all_segments.append([])  # Keep position for merge
+
+            # CRITICAL: Clear VRAM between chunks to prevent OOM
+            torch.cuda.empty_cache()
+            gc.collect()
+
+        # Merge segments from all chunks
+        merged = _merge_diarization_segments(
+            all_segments,
+            chunk_offsets,
+            DIARIZATION_OVERLAP_SECONDS,
+        )
+        logger.info(f"Merged {len(chunk_paths)} chunks into {len(merged)} segments")
+
+        return merged
+
+    finally:
+        # Always clean up chunk files
+        if chunk_paths:
+            cleanup_chunk_files(chunk_paths, temp_dir)
+        torch.cuda.empty_cache()
+        gc.collect()

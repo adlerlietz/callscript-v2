@@ -6,14 +6,23 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  Copy,
   Edit2,
+  Eye,
+  EyeOff,
+  Key,
+  Link2,
   Loader2,
   Plus,
+  RefreshCw,
   Save,
   Search,
+  Send,
   Shield,
+  Slack,
   Trash2,
   X,
+  Zap,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -55,10 +64,18 @@ interface QARule {
   is_system: boolean;
 }
 
-type Tab = "campaigns" | "rules";
+interface OrgSetting {
+  key: string;
+  value: unknown;
+  description: string;
+  is_secret: boolean;
+  updated_at: string | null;
+}
+
+type Tab = "campaigns" | "rules" | "integrations" | "api";
 
 // =============================================================================
-// Components
+// Shared Components
 // =============================================================================
 
 function Toggle({
@@ -128,6 +145,33 @@ function VerticalBadge({ vertical, verticals }: { vertical: string | null; verti
   );
 }
 
+function SettingCard({
+  icon: Icon,
+  title,
+  description,
+  children,
+}: {
+  icon: React.ElementType;
+  title: string;
+  description: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="rounded-lg border border-zinc-800 bg-zinc-900 p-6">
+      <div className="flex items-start gap-4">
+        <div className="p-2 rounded-lg bg-zinc-800">
+          <Icon className="h-5 w-5 text-zinc-400" />
+        </div>
+        <div className="flex-1">
+          <h3 className="text-sm font-medium text-zinc-100 mb-1">{title}</h3>
+          <p className="text-sm text-zinc-500 mb-4">{description}</p>
+          {children}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // =============================================================================
 // Campaign Edit Modal
 // =============================================================================
@@ -165,7 +209,6 @@ function CampaignEditModal({
         </div>
 
         <div className="space-y-4">
-          {/* Ringba ID (readonly) */}
           <div>
             <label className="block text-xs font-medium text-zinc-500 uppercase tracking-wider mb-2">
               Ringba Campaign ID
@@ -175,7 +218,6 @@ function CampaignEditModal({
             </div>
           </div>
 
-          {/* Friendly Name */}
           <div>
             <label className="block text-xs font-medium text-zinc-500 uppercase tracking-wider mb-2">
               Friendly Name
@@ -188,7 +230,6 @@ function CampaignEditModal({
             />
           </div>
 
-          {/* Vertical Selection */}
           <div>
             <label className="block text-xs font-medium text-zinc-500 uppercase tracking-wider mb-2">
               Vertical
@@ -215,7 +256,6 @@ function CampaignEditModal({
             </div>
           </div>
 
-          {/* Call Count Info */}
           <div className="text-xs text-zinc-500">
             This campaign has {campaign.call_count.toLocaleString()} calls.
           </div>
@@ -281,7 +321,6 @@ function RuleEditModal({
         </div>
 
         <div className="space-y-4">
-          {/* Rule Name */}
           <div>
             <label className="block text-xs font-medium text-zinc-500 uppercase tracking-wider mb-2">
               Rule Name
@@ -294,7 +333,6 @@ function RuleEditModal({
             />
           </div>
 
-          {/* Description */}
           <div>
             <label className="block text-xs font-medium text-zinc-500 uppercase tracking-wider mb-2">
               Description
@@ -307,7 +345,6 @@ function RuleEditModal({
             />
           </div>
 
-          {/* Severity */}
           <div>
             <label className="block text-xs font-medium text-zinc-500 uppercase tracking-wider mb-2">
               Severity
@@ -341,7 +378,6 @@ function RuleEditModal({
             </div>
           </div>
 
-          {/* Prompt Fragment */}
           <div>
             <label className="block text-xs font-medium text-zinc-500 uppercase tracking-wider mb-2">
               AI Instruction
@@ -394,7 +430,6 @@ function AddRuleModal({
   const [promptFragment, setPromptFragment] = useState("");
   const [saving, setSaving] = useState(false);
 
-  // Template suggestions
   const templates = [
     { label: "Must mention phrase", prompt: 'Flag if the agent does NOT mention "[PHRASE]" during the call.' },
     { label: "Must not say", prompt: 'Flag if the agent says "[PHRASE]" or similar language.' },
@@ -420,7 +455,6 @@ function AddRuleModal({
         </div>
 
         <div className="space-y-4">
-          {/* Rule Name */}
           <div>
             <label className="block text-xs font-medium text-zinc-500 uppercase tracking-wider mb-2">
               Rule Name
@@ -433,7 +467,6 @@ function AddRuleModal({
             />
           </div>
 
-          {/* Description */}
           <div>
             <label className="block text-xs font-medium text-zinc-500 uppercase tracking-wider mb-2">
               Description (Optional)
@@ -446,7 +479,6 @@ function AddRuleModal({
             />
           </div>
 
-          {/* Severity */}
           <div>
             <label className="block text-xs font-medium text-zinc-500 uppercase tracking-wider mb-2">
               Severity
@@ -477,7 +509,6 @@ function AddRuleModal({
             </div>
           </div>
 
-          {/* Template Suggestions */}
           <div>
             <label className="block text-xs font-medium text-zinc-500 uppercase tracking-wider mb-2">
               Start from template
@@ -495,7 +526,6 @@ function AddRuleModal({
             </div>
           </div>
 
-          {/* Prompt Fragment */}
           <div>
             <label className="block text-xs font-medium text-zinc-500 uppercase tracking-wider mb-2">
               AI Instruction
@@ -555,14 +585,38 @@ export default function SettingsPage() {
   const [addingRule, setAddingRule] = useState(false);
   const [expandedVerticals, setExpandedVerticals] = useState<Set<string>>(new Set());
 
+  // Integrations state
+  const [orgSettings, setOrgSettings] = useState<Record<string, unknown>>({});
+  const [slackUrl, setSlackUrl] = useState("");
+  const [discordUrl, setDiscordUrl] = useState("");
+  const [ringbaAccountId, setRingbaAccountId] = useState("");
+  const [ringbaToken, setRingbaToken] = useState("");
+  const [openaiKey, setOpenaiKey] = useState("");
+  const [savingIntegrations, setSavingIntegrations] = useState(false);
+  const [testingWebhook, setTestingWebhook] = useState<string | null>(null);
+  const [webhookTestResult, setWebhookTestResult] = useState<{ type: string; success: boolean; message: string } | null>(null);
+
+  // Notifications state
+  const [notifications, setNotifications] = useState({
+    critical_flags: true,
+    queue_alerts: true,
+    daily_digest: false,
+  });
+
+  // API Keys state
+  const [showApiKey, setShowApiKey] = useState(false);
+  const [apiKey] = useState("cs_live_" + Math.random().toString(36).substring(2, 15));
+  const [copiedKey, setCopiedKey] = useState(false);
+
   // Fetch data
   const fetchData = useCallback(async () => {
     setLoading(true);
     try {
-      const [campaignsRes, verticalsRes, rulesRes] = await Promise.all([
+      const [campaignsRes, verticalsRes, rulesRes, orgRes] = await Promise.all([
         fetch("/api/settings/campaigns"),
         fetch("/api/settings/verticals"),
         fetch("/api/settings/rules"),
+        fetch("/api/settings/org"),
       ]);
 
       if (campaignsRes.ok) {
@@ -582,6 +636,23 @@ export default function SettingsPage() {
           vertical: data.vertical || {},
           custom: data.custom || [],
         });
+      }
+
+      if (orgRes.ok) {
+        const data = await orgRes.json();
+        const settingsMap: Record<string, unknown> = {};
+        for (const s of data.settings || []) {
+          settingsMap[s.key] = s.value;
+        }
+        setOrgSettings(settingsMap);
+        setSlackUrl(String(settingsMap.slack_webhook_url || ""));
+        setDiscordUrl(String(settingsMap.discord_webhook_url || ""));
+        setRingbaAccountId(String(settingsMap.ringba_account_id || ""));
+        setRingbaToken(String(settingsMap.ringba_api_token || ""));
+        setOpenaiKey(String(settingsMap.openai_api_key || ""));
+        if (settingsMap.notifications_enabled && typeof settingsMap.notifications_enabled === "object") {
+          setNotifications(settingsMap.notifications_enabled as typeof notifications);
+        }
       }
     } catch (err) {
       console.error("Failed to fetch settings data:", err);
@@ -638,6 +709,69 @@ export default function SettingsPage() {
     await fetchData();
   };
 
+  // Integration handlers
+  const handleSaveIntegrations = async () => {
+    setSavingIntegrations(true);
+    try {
+      await fetch("/api/settings/org", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          updates: {
+            slack_webhook_url: slackUrl,
+            discord_webhook_url: discordUrl,
+            ringba_account_id: ringbaAccountId,
+            ringba_api_token: ringbaToken,
+            openai_api_key: openaiKey,
+            notifications_enabled: notifications,
+          },
+        }),
+      });
+      await fetchData();
+    } finally {
+      setSavingIntegrations(false);
+    }
+  };
+
+  const handleTestWebhook = async (type: "slack" | "discord") => {
+    const url = type === "slack" ? slackUrl : discordUrl;
+    if (!url || url.startsWith("••••")) {
+      setWebhookTestResult({ type, success: false, message: "Please enter a valid webhook URL first" });
+      return;
+    }
+
+    setTestingWebhook(type);
+    setWebhookTestResult(null);
+
+    try {
+      const res = await fetch("/api/settings/org", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type, url }),
+      });
+      const data = await res.json();
+      setWebhookTestResult({
+        type,
+        success: data.success,
+        message: data.success ? "Test message sent successfully!" : data.error,
+      });
+    } catch (err) {
+      setWebhookTestResult({
+        type,
+        success: false,
+        message: "Failed to test webhook",
+      });
+    } finally {
+      setTestingWebhook(null);
+    }
+  };
+
+  const handleCopyApiKey = () => {
+    navigator.clipboard.writeText(apiKey);
+    setCopiedKey(true);
+    setTimeout(() => setCopiedKey(false), 2000);
+  };
+
   // Filter campaigns by search
   const filteredMapped = campaigns.mapped.filter(
     (c) =>
@@ -656,9 +790,11 @@ export default function SettingsPage() {
     setExpandedVerticals(next);
   };
 
-  const tabs: { id: Tab; label: string; count?: number }[] = [
-    { id: "campaigns", label: "Campaigns", count: campaigns.unmapped.length || undefined },
-    { id: "rules", label: "QA Rules" },
+  const tabs: { id: Tab; label: string; icon: React.ElementType; count?: number }[] = [
+    { id: "campaigns", label: "Campaigns", icon: Link2, count: campaigns.unmapped.length || undefined },
+    { id: "rules", label: "QA Rules", icon: Shield },
+    { id: "integrations", label: "Integrations", icon: Zap },
+    { id: "api", label: "API Keys", icon: Key },
   ];
 
   if (loading) {
@@ -674,12 +810,12 @@ export default function SettingsPage() {
       {/* Header */}
       <div className="mb-8">
         <h1 className="text-2xl font-semibold text-zinc-100">Settings</h1>
-        <p className="text-sm text-zinc-500">Configure campaigns and QA rules</p>
+        <p className="text-sm text-zinc-500">Configure your QA platform</p>
       </div>
 
       {/* Tabs */}
       <div className="mb-8 border-b border-zinc-800">
-        <nav className="flex gap-8">
+        <nav className="flex gap-6">
           {tabs.map((tab) => (
             <button
               key={tab.id}
@@ -691,6 +827,7 @@ export default function SettingsPage() {
                   : "border-transparent text-zinc-500 hover:text-zinc-300"
               )}
             >
+              <tab.icon className="h-4 w-4" />
               {tab.label}
               {tab.count && tab.count > 0 && (
                 <span className="px-1.5 py-0.5 text-xs bg-amber-500/20 text-amber-400 rounded">
@@ -1024,6 +1161,276 @@ export default function SettingsPage() {
               </div>
             )}
           </div>
+        </div>
+      )}
+
+      {/* ========== INTEGRATIONS TAB ========== */}
+      {activeTab === "integrations" && (
+        <div className="space-y-6 max-w-2xl">
+          {/* Slack */}
+          <SettingCard
+            icon={Slack}
+            title="Slack Notifications"
+            description="Receive alerts in Slack when critical flags are detected or the queue backs up."
+          >
+            <div className="flex gap-3">
+              <Input
+                type="url"
+                placeholder="https://hooks.slack.com/services/..."
+                value={slackUrl}
+                onChange={(e) => setSlackUrl(e.target.value)}
+                className="flex-1 bg-zinc-800 border-zinc-700"
+              />
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => handleTestWebhook("slack")}
+                disabled={testingWebhook === "slack" || !slackUrl || slackUrl.startsWith("••••")}
+              >
+                {testingWebhook === "slack" ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Send className="h-4 w-4" />
+                )}
+              </Button>
+            </div>
+            {webhookTestResult?.type === "slack" && (
+              <div className={cn(
+                "mt-2 text-sm",
+                webhookTestResult.success ? "text-emerald-400" : "text-red-400"
+              )}>
+                {webhookTestResult.success ? "✓ " : "✗ "}{webhookTestResult.message}
+              </div>
+            )}
+          </SettingCard>
+
+          {/* Discord */}
+          <SettingCard
+            icon={Zap}
+            title="Discord Notifications"
+            description="Receive alerts in Discord when critical flags are detected."
+          >
+            <div className="flex gap-3">
+              <Input
+                type="url"
+                placeholder="https://discord.com/api/webhooks/..."
+                value={discordUrl}
+                onChange={(e) => setDiscordUrl(e.target.value)}
+                className="flex-1 bg-zinc-800 border-zinc-700"
+              />
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => handleTestWebhook("discord")}
+                disabled={testingWebhook === "discord" || !discordUrl || discordUrl.startsWith("••••")}
+              >
+                {testingWebhook === "discord" ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Send className="h-4 w-4" />
+                )}
+              </Button>
+            </div>
+            {webhookTestResult?.type === "discord" && (
+              <div className={cn(
+                "mt-2 text-sm",
+                webhookTestResult.success ? "text-emerald-400" : "text-red-400"
+              )}>
+                {webhookTestResult.success ? "✓ " : "✗ "}{webhookTestResult.message}
+              </div>
+            )}
+          </SettingCard>
+
+          {/* Notification Preferences */}
+          <SettingCard
+            icon={AlertTriangle}
+            title="Notification Preferences"
+            description="Choose which events trigger notifications."
+          >
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <span className="text-sm text-zinc-200">Critical Flags</span>
+                  <p className="text-xs text-zinc-500">Alert when a call is flagged with critical issues</p>
+                </div>
+                <Toggle
+                  enabled={notifications.critical_flags}
+                  onToggle={() => setNotifications({ ...notifications, critical_flags: !notifications.critical_flags })}
+                />
+              </div>
+              <div className="flex items-center justify-between">
+                <div>
+                  <span className="text-sm text-zinc-200">Queue Alerts</span>
+                  <p className="text-xs text-zinc-500">Alert when processing queue exceeds 200 calls</p>
+                </div>
+                <Toggle
+                  enabled={notifications.queue_alerts}
+                  onToggle={() => setNotifications({ ...notifications, queue_alerts: !notifications.queue_alerts })}
+                />
+              </div>
+              <div className="flex items-center justify-between">
+                <div>
+                  <span className="text-sm text-zinc-200">Daily Digest</span>
+                  <p className="text-xs text-zinc-500">Receive a daily summary of QA metrics</p>
+                </div>
+                <Toggle
+                  enabled={notifications.daily_digest}
+                  onToggle={() => setNotifications({ ...notifications, daily_digest: !notifications.daily_digest })}
+                />
+              </div>
+            </div>
+          </SettingCard>
+
+          {/* Ringba Integration */}
+          <SettingCard
+            icon={Link2}
+            title="Ringba Integration"
+            description="Connect to Ringba to sync call data automatically."
+          >
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs text-zinc-500 mb-1">Account ID</label>
+                <Input
+                  placeholder="Your Ringba Account ID"
+                  value={ringbaAccountId}
+                  onChange={(e) => setRingbaAccountId(e.target.value)}
+                  className="bg-zinc-800 border-zinc-700"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-zinc-500 mb-1">API Token</label>
+                <Input
+                  type="password"
+                  placeholder="Your Ringba API Token"
+                  value={ringbaToken}
+                  onChange={(e) => setRingbaToken(e.target.value)}
+                  className="bg-zinc-800 border-zinc-700"
+                />
+              </div>
+            </div>
+          </SettingCard>
+
+          {/* OpenAI Integration */}
+          <SettingCard
+            icon={Zap}
+            title="OpenAI Integration"
+            description="API key for the AI Judge that analyzes call transcripts."
+          >
+            <Input
+              type="password"
+              placeholder="sk-..."
+              value={openaiKey}
+              onChange={(e) => setOpenaiKey(e.target.value)}
+              className="bg-zinc-800 border-zinc-700"
+            />
+            <p className="mt-2 text-xs text-zinc-500">
+              Currently using: <span className="text-zinc-400">gpt-4o-mini</span>
+            </p>
+          </SettingCard>
+
+          {/* Save Button */}
+          <div className="flex justify-end pt-4">
+            <Button onClick={handleSaveIntegrations} disabled={savingIntegrations}>
+              {savingIntegrations ? (
+                <Loader2 className="h-4 w-4 animate-spin mr-2" />
+              ) : (
+                <Save className="h-4 w-4 mr-2" />
+              )}
+              Save Integrations
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {/* ========== API KEYS TAB ========== */}
+      {activeTab === "api" && (
+        <div className="space-y-6 max-w-2xl">
+          <SettingCard
+            icon={Key}
+            title="API Key"
+            description="Use this key to access the CallScript API programmatically."
+          >
+            <div className="space-y-4">
+              <div className="flex items-center gap-3">
+                <div className="flex-1 font-mono text-sm bg-zinc-800 rounded-md px-4 py-3 text-zinc-300 flex items-center justify-between">
+                  <span>
+                    {showApiKey ? apiKey : "cs_live_••••••••••••••••••••"}
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => setShowApiKey(!showApiKey)}
+                      className="text-zinc-500 hover:text-zinc-300"
+                    >
+                      {showApiKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                    </button>
+                    <button
+                      onClick={handleCopyApiKey}
+                      className="text-zinc-500 hover:text-zinc-300"
+                    >
+                      {copiedKey ? <Check className="h-4 w-4 text-emerald-400" /> : <Copy className="h-4 w-4" />}
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-3">
+                <Button variant="destructive" size="sm">
+                  <RefreshCw className="h-4 w-4 mr-2" />
+                  Roll Key
+                </Button>
+                <span className="text-xs text-zinc-500">
+                  Rolling the key will invalidate the current key immediately.
+                </span>
+              </div>
+            </div>
+          </SettingCard>
+
+          <SettingCard
+            icon={Shield}
+            title="API Permissions"
+            description="This key has the following permissions:"
+          >
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <Check className="h-4 w-4 text-emerald-400" />
+                <span className="text-sm text-zinc-300">Read calls and transcripts</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <Check className="h-4 w-4 text-emerald-400" />
+                <span className="text-sm text-zinc-300">Update call status</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <Check className="h-4 w-4 text-emerald-400" />
+                <span className="text-sm text-zinc-300">Access QA flags and scores</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <X className="h-4 w-4 text-zinc-600" />
+                <span className="text-sm text-zinc-500">Modify settings (admin only)</span>
+              </div>
+            </div>
+          </SettingCard>
+
+          <SettingCard
+            icon={Zap}
+            title="API Documentation"
+            description="Learn how to integrate with the CallScript API."
+          >
+            <div className="bg-zinc-800 rounded-lg p-4 font-mono text-sm">
+              <div className="text-zinc-500 mb-2"># Example: Get flagged calls</div>
+              <div className="text-zinc-300">
+                curl -X GET https://api.callscript.ai/v1/calls \
+              </div>
+              <div className="text-zinc-300 pl-4">
+                -H &quot;Authorization: Bearer cs_live_...&quot; \
+              </div>
+              <div className="text-zinc-300 pl-4">
+                -d &apos;{`{"status": "flagged"}`}&apos;
+              </div>
+            </div>
+            <Button variant="outline" size="sm" className="mt-3">
+              View Full Documentation
+            </Button>
+          </SettingCard>
         </div>
       )}
 

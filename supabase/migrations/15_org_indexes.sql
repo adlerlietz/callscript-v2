@@ -1,8 +1,8 @@
 -- =============================================================================
 -- Migration 15: Multi-Tenant Performance Indexes
 -- =============================================================================
--- SAFE: Index creation is non-blocking in Postgres 11+
--- Can run while system is live
+-- NOTE: Using regular CREATE INDEX (not CONCURRENTLY) for migration compatibility
+-- CONCURRENTLY cannot run inside a transaction/pipeline
 -- =============================================================================
 
 -- =============================================================================
@@ -16,7 +16,7 @@ DROP INDEX IF EXISTS core.idx_calls_queue;
 
 -- Create new composite index with org_id first
 -- Order matters: org_id filters first (tenant isolation), then status, then LIFO sort
-CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_calls_org_queue
+CREATE INDEX IF NOT EXISTS idx_calls_org_queue
     ON core.calls(org_id, status, start_time_utc DESC);
 
 COMMENT ON INDEX core.idx_calls_org_queue IS
@@ -26,7 +26,7 @@ COMMENT ON INDEX core.idx_calls_org_queue IS
 -- =============================================================================
 -- 2. Campaign Lookup by Org
 -- =============================================================================
-CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_campaigns_org_id
+CREATE INDEX IF NOT EXISTS idx_campaigns_org_id
     ON core.campaigns(org_id);
 
 
@@ -34,7 +34,7 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_campaigns_org_id
 -- 3. Calls by Campaign (for analytics)
 -- =============================================================================
 -- Query pattern: WHERE campaign_id = ? AND org_id = ? (for dashboard)
-CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_calls_campaign_org
+CREATE INDEX IF NOT EXISTS idx_calls_campaign_org
     ON core.calls(campaign_id, org_id);
 
 
@@ -42,7 +42,7 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_calls_campaign_org
 -- 4. Calls by Time Range (for dashboard charts)
 -- =============================================================================
 -- Query pattern: WHERE org_id = ? AND start_time_utc > ?
-CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_calls_org_time
+CREATE INDEX IF NOT EXISTS idx_calls_org_time
     ON core.calls(org_id, start_time_utc DESC);
 
 

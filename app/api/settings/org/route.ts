@@ -5,6 +5,8 @@ import { supabase } from "@/lib/supabase";
  * Default settings when table doesn't exist yet
  */
 const DEFAULT_SETTINGS: Record<string, { value: unknown; description: string; is_secret: boolean }> = {
+  org_name: { value: "My Organization", description: "Organization display name", is_secret: false },
+  org_slug: { value: "my-org", description: "Organization URL slug", is_secret: false },
   slack_webhook_url: { value: "", description: "Slack webhook URL for notifications", is_secret: true },
   discord_webhook_url: { value: "", description: "Discord webhook URL for notifications", is_secret: true },
   notifications_enabled: {
@@ -65,7 +67,7 @@ export async function GET() {
 
 /**
  * PATCH /api/settings/org
- * Update one or more settings
+ * Update one or more settings (upserts if not exists)
  */
 export async function PATCH(request: NextRequest) {
   const body = await request.json();
@@ -83,16 +85,27 @@ export async function PATCH(request: NextRequest) {
       continue;
     }
 
+    // Get default config for this key (for description and is_secret)
+    const defaultConfig = DEFAULT_SETTINGS[key] || {
+      description: `Setting: ${key}`,
+      is_secret: false,
+    };
+
+    // Use upsert to create or update the setting
     const { error } = await supabase
       .from("settings")
-      .update({
+      .upsert({
+        key,
         value: JSON.stringify(value),
+        description: defaultConfig.description,
+        is_secret: defaultConfig.is_secret,
         updated_at: new Date().toISOString(),
-      })
-      .eq("key", key);
+      }, {
+        onConflict: "key",
+      });
 
     if (error) {
-      console.error(`Failed to update setting ${key}:`, error);
+      console.error(`Failed to upsert setting ${key}:`, error);
       results[key] = false;
     } else {
       results[key] = true;

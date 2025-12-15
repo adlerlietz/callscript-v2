@@ -1,17 +1,29 @@
 import { NextResponse } from "next/server";
-import { supabase } from "@/lib/supabase";
+import { createClient } from "@/lib/supabase/server";
+import { getAuthContext } from "@/lib/supabase/auth";
 
+/**
+ * GET /api/stats
+ * Fetches basic statistics for the authenticated user's organization.
+ */
 export async function GET() {
+  // Verify user is authenticated and has org context
+  const auth = await getAuthContext();
+  if (!auth) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const supabase = await createClient();
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   const todayISO = today.toISOString();
 
-  // Run queries in parallel using the public view
+  // Run queries in parallel using the public view with org filter
   const [totalResult, flaggedResult, safeResult, todayResult] = await Promise.all([
-    supabase.from("calls_overview").select("*", { count: "exact", head: true }),
-    supabase.from("calls_overview").select("*", { count: "exact", head: true }).eq("status", "flagged"),
-    supabase.from("calls_overview").select("*", { count: "exact", head: true }).eq("status", "safe"),
-    supabase.from("calls_overview").select("*", { count: "exact", head: true }).gte("start_time_utc", todayISO),
+    supabase.from("calls_overview").select("*", { count: "exact", head: true }).eq("org_id", auth.orgId),
+    supabase.from("calls_overview").select("*", { count: "exact", head: true }).eq("org_id", auth.orgId).eq("status", "flagged"),
+    supabase.from("calls_overview").select("*", { count: "exact", head: true }).eq("org_id", auth.orgId).eq("status", "safe"),
+    supabase.from("calls_overview").select("*", { count: "exact", head: true }).eq("org_id", auth.orgId).gte("start_time_utc", todayISO),
   ]);
 
   const totalCalls = totalResult.count ?? 0;
@@ -29,7 +41,7 @@ export async function GET() {
     flaggedCalls,
     safeCalls,
     flagRate: Math.round(flagRate * 10) / 10,
-    revenueRecovered: 0, // Revenue not in public view
+    revenueRecovered: 0,
     systemHealth: "healthy",
   });
 }

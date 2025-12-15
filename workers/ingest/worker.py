@@ -11,9 +11,16 @@ Architecture:
 - Upserts to database with deduplication on ringba_call_id
 - Does NOT overwrite status on conflict (preserves pipeline progress)
 
+Multi-Org Support:
+- Single-tenant: Uses RINGBA_ACCOUNT_ID and RINGBA_TOKEN from env vars
+- Multi-tenant: Fetches credentials per-org from organization_credentials table
+
 Usage:
-    # Normal mode (continuous, last 5 minutes)
+    # Normal mode (continuous, last 5 minutes, single-tenant)
     python workers/ingest/worker.py
+
+    # Multi-org mode (fetches all orgs with Ringba credentials)
+    python workers/ingest/worker.py --multi-org
 
     # Backfill mode (one-time, last N hours)
     python workers/ingest/worker.py --backfill --hours 24
@@ -84,6 +91,49 @@ def signal_handler(sig, frame):
     global shutdown_requested
     shutdown_requested = True
     logger.info("Shutdown signal received, finishing current sync...")
+
+
+# =============================================================================
+# MULTI-ORG CREDENTIAL FETCHING
+# =============================================================================
+def get_active_org_credentials(client) -> list[dict[str, Any]]:
+    """
+    Fetch all active organizations with valid Ringba credentials.
+
+    Uses the organization_credentials table to get decrypted credentials.
+    Only returns orgs with active status and valid credentials.
+
+    Args:
+        client: Supabase client
+
+    Returns:
+        List of dicts with org_id, account_id, and token
+    """
+    try:
+        # Call the RPC function to get credentials for all orgs
+        response = client.rpc(
+            "get_all_org_ringba_credentials"
+        ).execute()
+
+        if not response.data:
+            return []
+
+        # Filter to only those with both account_id and token
+        orgs = []
+        for row in response.data:
+            if row.get("account_id") and row.get("token"):
+                orgs.append({
+                    "org_id": row["org_id"],
+                    "org_name": row.get("org_name", "Unknown"),
+                    "account_id": row["account_id"],
+                    "token": row["token"],
+                })
+
+        return orgs
+
+    except Exception as e:
+        logger.warning(f"Failed to fetch org credentials (may need migration): {e}")
+        return []
 
 
 # =============================================================================
@@ -411,15 +461,17 @@ def run_sync_cycle(
     repo: IngestRepository,
     account_id: str,
     token: str,
+    org_id: str = DEFAULT_ORG_ID,
     lookback_minutes: int = LOOKBACK_MINUTES,
 ) -> tuple[int, int]:
     """
-    Run a single sync cycle.
+    Run a single sync cycle for an organization.
 
     Args:
         repo: Ingest repository
         account_id: Ringba account ID
         token: Ringba API token
+        org_id: Organization UUID
         lookback_minutes: How far back to fetch
 
     Returns:
@@ -454,11 +506,11 @@ def run_sync_cycle(
             campaign_id = repo.ensure_campaign(
                 ringba_campaign_id,
                 record.get("campaignName", "Unknown"),
-                DEFAULT_ORG_ID,
+                org_id,
             )
 
         # Map to database format
-        call = map_ringba_to_call(record, DEFAULT_ORG_ID, campaign_id)
+        call = map_ringba_to_call(record, org_id, campaign_id)
         calls.append(call)
 
     # Upsert to database (preserves status on conflict)
@@ -567,6 +619,11 @@ def parse_args():
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
+        "--multi-org",
+        action="store_true",
+        help="Run in multi-org mode (fetch credentials per org from database)",
+    )
+    parser.add_argument(
         "--backfill",
         action="store_true",
         help="Run in backfill mode (one-time, then exit)",
@@ -629,21 +686,15 @@ def main():
     logger.info("=" * 60)
     if args.backfill:
         logger.info("CallScript V2 Ingest Worker - BACKFILL MODE")
+    elif args.multi_org:
+        logger.info("CallScript V2 Ingest Worker - MULTI-ORG MODE")
     else:
-        logger.info("CallScript V2 Ingest Worker Starting")
+        logger.info("CallScript V2 Ingest Worker Starting (Single-Tenant)")
     logger.info("=" * 60)
 
     # Setup signal handlers
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)
-
-    # Validate Ringba credentials
-    try:
-        account_id, token = settings.require_ringba()
-        logger.info(f"Ringba account: {account_id[:12]}...")
-    except ValueError as e:
-        logger.critical(str(e))
-        sys.exit(1)
 
     # Connect to Supabase
     try:
@@ -652,6 +703,100 @@ def main():
         logger.info("Connected to Supabase")
     except Exception as e:
         logger.critical(f"Failed to connect to Supabase: {e}")
+        sys.exit(1)
+
+    # ==========================================================================
+    # MULTI-ORG MODE
+    # ==========================================================================
+    if args.multi_org:
+        logger.info("Fetching organization credentials from database...")
+
+        # Log initial stats
+        stats = repo.get_queue_stats()
+        logger.info(f"Queue stats: pending={stats.get('pending', 0)}, total={sum(v for v in stats.values() if v > 0)}")
+        logger.info(f"Config: interval={SYNC_INTERVAL}s, lookback={LOOKBACK_MINUTES}min")
+        logger.info("=" * 60)
+
+        total_fetched = 0
+        total_inserted = 0
+        sync_count = 0
+
+        while not shutdown_requested:
+            try:
+                sync_count += 1
+
+                # Fetch active orgs with credentials
+                orgs = get_active_org_credentials(client)
+
+                if not orgs:
+                    logger.warning("No organizations with Ringba credentials found")
+                    time.sleep(SYNC_INTERVAL)
+                    continue
+
+                logger.info(f"Sync #{sync_count}: Processing {len(orgs)} organization(s)")
+
+                # Sync each org
+                for org in orgs:
+                    if shutdown_requested:
+                        break
+
+                    org_name = org.get("org_name", "Unknown")[:20]
+                    logger.info(f"  [{org_name}] Syncing...")
+
+                    try:
+                        fetched, inserted = run_sync_cycle(
+                            repo,
+                            org["account_id"],
+                            org["token"],
+                            org_id=org["org_id"],
+                        )
+                        total_fetched += fetched
+                        total_inserted += inserted
+
+                        if fetched > 0:
+                            logger.info(f"  [{org_name}] {fetched} fetched, {inserted} new")
+
+                    except Exception as org_e:
+                        logger.error(f"  [{org_name}] Error: {org_e}")
+
+                # Log milestone every 10 syncs
+                if sync_count % 10 == 0:
+                    stats = repo.get_queue_stats()
+                    logger.info(
+                        f"Milestone #{sync_count} | Session: {total_fetched} fetched, {total_inserted} inserted | "
+                        f"Pending: {stats.get('pending', 0)}"
+                    )
+
+                # Wait for next sync
+                logger.debug(f"Sleeping {SYNC_INTERVAL}s until next sync...")
+                time.sleep(SYNC_INTERVAL)
+
+            except KeyboardInterrupt:
+                logger.info("Interrupted by user")
+                break
+
+            except Exception as e:
+                logger.error(f"Sync error: {e}")
+                time.sleep(SYNC_INTERVAL)
+
+        # Shutdown summary
+        logger.info("=" * 60)
+        logger.info("Ingest Worker Shutdown (Multi-Org)")
+        logger.info(f"Total syncs: {sync_count}")
+        logger.info(f"Total fetched: {total_fetched}")
+        logger.info(f"Total inserted: {total_inserted}")
+        logger.info("=" * 60)
+        return
+
+    # ==========================================================================
+    # SINGLE-TENANT MODE (env vars)
+    # ==========================================================================
+    # Validate Ringba credentials from env vars
+    try:
+        account_id, token = settings.require_ringba()
+        logger.info(f"Ringba account: {account_id[:12]}...")
+    except ValueError as e:
+        logger.critical(str(e))
         sys.exit(1)
 
     # Log configuration
@@ -703,7 +848,7 @@ def main():
         return
 
     # ==========================================================================
-    # NORMAL MODE (continuous loop)
+    # NORMAL MODE (continuous loop, single-tenant)
     # ==========================================================================
     logger.info(f"Config: interval={SYNC_INTERVAL}s, lookback={LOOKBACK_MINUTES}min")
 
@@ -714,7 +859,7 @@ def main():
     while not shutdown_requested:
         try:
             sync_count += 1
-            fetched, inserted = run_sync_cycle(repo, account_id, token)
+            fetched, inserted = run_sync_cycle(repo, account_id, token, org_id=DEFAULT_ORG_ID)
 
             total_fetched += fetched
             total_inserted += inserted

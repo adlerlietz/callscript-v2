@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { supabase } from "@/lib/supabase";
+import { createClient } from "@/lib/supabase/server";
+import { getAuthContext, isAdmin } from "@/lib/supabase/auth";
 
 /**
  * Default settings when table doesn't exist yet
@@ -35,12 +36,27 @@ function maskSecret(value: unknown): string {
 
 /**
  * GET /api/settings/org
- * Returns all organization settings (secrets are masked)
+ * Returns all organization settings (secrets are masked).
+ * Only owner/admin can access settings.
  */
 export async function GET() {
+  // Verify user is authenticated and has org context
+  const auth = await getAuthContext();
+  if (!auth) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  // Only admin/owner can view settings
+  if (!isAdmin(auth)) {
+    return NextResponse.json({ error: "Forbidden: admin access required" }, { status: 403 });
+  }
+
+  const supabase = await createClient();
+
   const { data: settings, error } = await supabase
     .from("settings")
     .select("key, value, description, is_secret, updated_at")
+    .eq("org_id", auth.orgId)
     .order("key");
 
   if (error) {
@@ -67,9 +83,22 @@ export async function GET() {
 
 /**
  * PATCH /api/settings/org
- * Update one or more settings (upserts if not exists)
+ * Update one or more settings (upserts if not exists).
+ * Only owner/admin can modify settings.
  */
 export async function PATCH(request: NextRequest) {
+  // Verify user is authenticated and has org context
+  const auth = await getAuthContext();
+  if (!auth) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  // Only admin/owner can modify settings
+  if (!isAdmin(auth)) {
+    return NextResponse.json({ error: "Forbidden: admin access required" }, { status: 403 });
+  }
+
+  const supabase = await createClient();
   const body = await request.json();
   const { updates } = body as { updates: Record<string, unknown> };
 
@@ -91,17 +120,18 @@ export async function PATCH(request: NextRequest) {
       is_secret: false,
     };
 
-    // Use upsert to create or update the setting
+    // Use upsert to create or update the setting (include org_id)
     const { error } = await supabase
       .from("settings")
       .upsert({
+        org_id: auth.orgId,
         key,
         value: JSON.stringify(value),
         description: defaultConfig.description,
         is_secret: defaultConfig.is_secret,
         updated_at: new Date().toISOString(),
       }, {
-        onConflict: "key",
+        onConflict: "org_id,key",
       });
 
     if (error) {
@@ -117,9 +147,21 @@ export async function PATCH(request: NextRequest) {
 
 /**
  * POST /api/settings/org/test-webhook
- * Test a webhook URL by sending a test message
+ * Test a webhook URL by sending a test message.
+ * Only owner/admin can test webhooks.
  */
 export async function POST(request: NextRequest) {
+  // Verify user is authenticated and has org context
+  const auth = await getAuthContext();
+  if (!auth) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  // Only admin/owner can test webhooks
+  if (!isAdmin(auth)) {
+    return NextResponse.json({ error: "Forbidden: admin access required" }, { status: 403 });
+  }
+
   const body = await request.json();
   const { type, url } = body as { type: "slack" | "discord"; url: string };
 

@@ -1,11 +1,24 @@
 import { NextRequest, NextResponse } from "next/server";
-import { supabase } from "@/lib/supabase";
+import { createClient } from "@/lib/supabase/server";
+import { getAuthContext, isAdmin } from "@/lib/supabase/auth";
 
 /**
  * POST /api/settings/ringba-test
- * Tests Ringba API connection with provided credentials
+ * Tests Ringba API connection with provided credentials.
+ * Only owner/admin can test connections.
  */
 export async function POST(request: NextRequest) {
+  // Verify user is authenticated and has org context
+  const auth = await getAuthContext();
+  if (!auth) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  // Only admin/owner can test connections
+  if (!isAdmin(auth)) {
+    return NextResponse.json({ error: "Forbidden: admin access required" }, { status: 403 });
+  }
+
   const body = await request.json();
   const { accountId, token } = body;
 
@@ -77,14 +90,23 @@ export async function POST(request: NextRequest) {
 
 /**
  * GET /api/settings/ringba-test
- * Gets the last sync time from the database
+ * Gets the last sync time from the database.
  */
 export async function GET() {
+  // Verify user is authenticated and has org context
+  const auth = await getAuthContext();
+  if (!auth) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const supabase = await createClient();
+
   try {
-    // Get the most recent call's updated_at to determine last sync
+    // Get the most recent call's updated_at for this org
     const { data, error } = await supabase
       .from("calls_overview")
       .select("updated_at")
+      .eq("org_id", auth.orgId)
       .order("updated_at", { ascending: false })
       .limit(1);
 

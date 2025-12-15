@@ -1,7 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
-import { supabase } from "@/lib/supabase";
+import { createClient } from "@/lib/supabase/server";
+import { getAuthContext } from "@/lib/supabase/auth";
 
+/**
+ * GET /api/stats/chart
+ * Fetches chart data for the authenticated user's organization.
+ */
 export async function GET(request: NextRequest) {
+  // Verify user is authenticated and has org context
+  const auth = await getAuthContext();
+  if (!auth) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const supabase = await createClient();
   const searchParams = request.nextUrl.searchParams;
   const days = parseInt(searchParams.get("days") || "7", 10);
 
@@ -12,6 +24,7 @@ export async function GET(request: NextRequest) {
   const { data, error } = await supabase
     .from("calls_overview")
     .select("start_time_utc, status")
+    .eq("org_id", auth.orgId)
     .gte("start_time_utc", startDate.toISOString())
     .order("start_time_utc", { ascending: true });
 

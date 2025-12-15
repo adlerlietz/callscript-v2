@@ -41,21 +41,37 @@ export async function updateSession(request: NextRequest) {
 
   // Define protected and public routes
   const isLoginPage = request.nextUrl.pathname === "/login";
+  const isNoAccessPage = request.nextUrl.pathname === "/no-access";
   const isPublicRoute = request.nextUrl.pathname.startsWith("/api/public");
   const isAuthCallback = request.nextUrl.pathname === "/auth/callback";
+  const isApiRoute = request.nextUrl.pathname.startsWith("/api/");
 
   // If no user and trying to access protected route, redirect to login
-  if (!user && !isLoginPage && !isPublicRoute && !isAuthCallback) {
+  if (!user && !isLoginPage && !isPublicRoute && !isAuthCallback && !isNoAccessPage) {
     const url = request.nextUrl.clone();
     url.pathname = "/login";
     return NextResponse.redirect(url);
   }
 
-  // If user is logged in and on login page, redirect to dashboard
+  // If user is logged in but has no org membership (no org_id in JWT), redirect to no-access
+  // This implements the invite-only model - users must be invited to an org first
+  if (user && !isLoginPage && !isNoAccessPage && !isAuthCallback && !isApiRoute) {
+    const orgId = user.app_metadata?.org_id;
+    if (!orgId) {
+      const url = request.nextUrl.clone();
+      url.pathname = "/no-access";
+      return NextResponse.redirect(url);
+    }
+  }
+
+  // If user is logged in with org access and on login page, redirect to dashboard
   if (user && isLoginPage) {
-    const url = request.nextUrl.clone();
-    url.pathname = "/dashboard";
-    return NextResponse.redirect(url);
+    const orgId = user.app_metadata?.org_id;
+    if (orgId) {
+      const url = request.nextUrl.clone();
+      url.pathname = "/dashboard";
+      return NextResponse.redirect(url);
+    }
   }
 
   return supabaseResponse;

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { supabase } from "@/lib/supabase";
+import { createClient } from "@/lib/supabase/server";
+import { getAuthContext, isAdmin } from "@/lib/supabase/auth";
 
 /**
  * QA Rule type definition
@@ -18,16 +19,29 @@ interface QARule {
   rule_config: Record<string, unknown> | null;
   is_system: boolean;
   display_order: number;
+  org_id: string | null;
 }
 
 /**
  * GET /api/settings/rules
- * Returns all QA rules grouped by scope
+ * Returns all QA rules grouped by scope.
+ * System rules (org_id IS NULL) are visible to all.
+ * Custom rules are filtered by user's organization.
  */
 export async function GET() {
+  // Verify user is authenticated and has org context
+  const auth = await getAuthContext();
+  if (!auth) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const supabase = await createClient();
+
+  // Get all rules: system rules (org_id IS NULL) + org-specific custom rules
   const { data: rules, error } = await supabase
     .from("qa_rules")
     .select("*")
+    .or(`org_id.is.null,org_id.eq.${auth.orgId}`)
     .order("display_order", { ascending: true });
 
   if (error) {
@@ -64,14 +78,46 @@ export async function GET() {
 
 /**
  * PATCH /api/settings/rules
- * Update a rule's enabled status, severity, or prompt
+ * Update a rule's enabled status, severity, or prompt.
+ * Only owner/admin can modify rules. System rules cannot be modified.
  */
 export async function PATCH(request: NextRequest) {
+  // Verify user is authenticated and has org context
+  const auth = await getAuthContext();
+  if (!auth) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  // Only admin/owner can modify rules
+  if (!isAdmin(auth)) {
+    return NextResponse.json({ error: "Forbidden: admin access required" }, { status: 403 });
+  }
+
+  const supabase = await createClient();
   const body = await request.json();
   const { id, enabled, severity, prompt_fragment, name, description } = body;
 
   if (!id) {
     return NextResponse.json({ error: "Rule ID is required" }, { status: 400 });
+  }
+
+  // Verify rule belongs to user's org and is not a system rule
+  const { data: rule, error: fetchError } = await supabase
+    .from("qa_rules")
+    .select("id, is_system, org_id")
+    .eq("id", id)
+    .single();
+
+  if (fetchError || !rule) {
+    return NextResponse.json({ error: "Rule not found" }, { status: 404 });
+  }
+
+  if (rule.is_system) {
+    return NextResponse.json({ error: "System rules cannot be modified" }, { status: 403 });
+  }
+
+  if (rule.org_id !== auth.orgId) {
+    return NextResponse.json({ error: "Rule not found" }, { status: 404 });
   }
 
   const updates: Record<string, unknown> = {
@@ -88,6 +134,7 @@ export async function PATCH(request: NextRequest) {
     .from("qa_rules")
     .update(updates)
     .eq("id", id)
+    .eq("org_id", auth.orgId)
     .select()
     .single();
 
@@ -101,9 +148,22 @@ export async function PATCH(request: NextRequest) {
 
 /**
  * POST /api/settings/rules
- * Create a new custom rule
+ * Create a new custom rule.
+ * Only owner/admin can create rules.
  */
 export async function POST(request: NextRequest) {
+  // Verify user is authenticated and has org context
+  const auth = await getAuthContext();
+  if (!auth) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  // Only admin/owner can create rules
+  if (!isAdmin(auth)) {
+    return NextResponse.json({ error: "Forbidden: admin access required" }, { status: 403 });
+  }
+
+  const supabase = await createClient();
   const body = await request.json();
   const { name, description, severity, prompt_fragment, rule_type, rule_config } = body;
 
@@ -120,6 +180,7 @@ export async function POST(request: NextRequest) {
   const { data, error } = await supabase
     .from("qa_rules")
     .insert({
+      org_id: auth.orgId,
       slug,
       name,
       description: description || null,
@@ -146,9 +207,22 @@ export async function POST(request: NextRequest) {
 
 /**
  * DELETE /api/settings/rules?id=xxx
- * Delete a custom rule (system rules cannot be deleted)
+ * Delete a custom rule (system rules cannot be deleted).
+ * Only owner/admin can delete rules.
  */
 export async function DELETE(request: NextRequest) {
+  // Verify user is authenticated and has org context
+  const auth = await getAuthContext();
+  if (!auth) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  // Only admin/owner can delete rules
+  if (!isAdmin(auth)) {
+    return NextResponse.json({ error: "Forbidden: admin access required" }, { status: 403 });
+  }
+
+  const supabase = await createClient();
   const { searchParams } = new URL(request.url);
   const id = searchParams.get("id");
 
@@ -156,21 +230,33 @@ export async function DELETE(request: NextRequest) {
     return NextResponse.json({ error: "Rule ID is required" }, { status: 400 });
   }
 
-  // First check if it's a system rule
+  // Check if rule exists, belongs to user's org, and is not a system rule
   const { data: rule } = await supabase
     .from("qa_rules")
-    .select("is_system")
+    .select("is_system, org_id")
     .eq("id", id)
     .single();
 
-  if (rule?.is_system) {
+  if (!rule) {
+    return NextResponse.json({ error: "Rule not found" }, { status: 404 });
+  }
+
+  if (rule.is_system) {
     return NextResponse.json(
       { error: "System rules cannot be deleted" },
       { status: 403 }
     );
   }
 
-  const { error } = await supabase.from("qa_rules").delete().eq("id", id);
+  if (rule.org_id !== auth.orgId) {
+    return NextResponse.json({ error: "Rule not found" }, { status: 404 });
+  }
+
+  const { error } = await supabase
+    .from("qa_rules")
+    .delete()
+    .eq("id", id)
+    .eq("org_id", auth.orgId);
 
   if (error) {
     console.error("Failed to delete rule:", error);

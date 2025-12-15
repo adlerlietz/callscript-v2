@@ -1,11 +1,21 @@
 import { NextResponse } from "next/server";
-import { supabase } from "@/lib/supabase";
+import { createClient } from "@/lib/supabase/server";
+import { getAuthContext } from "@/lib/supabase/auth";
 
 /**
  * GET /api/settings/verticals
- * Returns all available verticals for dropdown selection
+ * Returns all available verticals for dropdown selection.
+ * Verticals are global (not per-org), but requires authentication.
  */
 export async function GET() {
+  // Verify user is authenticated
+  const auth = await getAuthContext();
+  if (!auth) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const supabase = await createClient();
+
   const { data: verticals, error } = await supabase
     .from("verticals")
     .select("id, name, description, icon, color, display_order")

@@ -1,12 +1,22 @@
 import { NextRequest, NextResponse } from "next/server";
-import { supabase } from "@/lib/supabase";
+import { createClient } from "@/lib/supabase/server";
+import { getAuthContext, isAdmin } from "@/lib/supabase/auth";
 
 /**
  * GET /api/settings/campaigns
- * Returns all campaigns with call counts, grouped by mapping status
+ * Returns all campaigns with call counts, grouped by mapping status.
+ * Filtered by user's organization.
  */
 export async function GET() {
-  // Get all campaigns with their call counts
+  // Verify user is authenticated and has org context
+  const auth = await getAuthContext();
+  if (!auth) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const supabase = await createClient();
+
+  // Get all campaigns for this org
   const { data: campaigns, error } = await supabase
     .from("campaigns")
     .select(`
@@ -19,6 +29,7 @@ export async function GET() {
       created_at,
       updated_at
     `)
+    .eq("org_id", auth.orgId)
     .order("created_at", { ascending: false });
 
   if (error) {
@@ -26,10 +37,11 @@ export async function GET() {
     return NextResponse.json({ error: "Failed to fetch campaigns" }, { status: 500 });
   }
 
-  // Get call counts per campaign
+  // Get call counts per campaign (filtered by org)
   const { data: callCounts, error: countError } = await supabase
-    .from("calls")
+    .from("calls_overview")
     .select("campaign_id")
+    .eq("org_id", auth.orgId)
     .not("campaign_id", "is", null);
 
   // Count calls per campaign
@@ -63,14 +75,39 @@ export async function GET() {
 
 /**
  * PATCH /api/settings/campaigns
- * Update a campaign's name and/or vertical
+ * Update a campaign's name and/or vertical.
+ * Only owner/admin can modify campaigns.
  */
 export async function PATCH(request: NextRequest) {
+  // Verify user is authenticated and has org context
+  const auth = await getAuthContext();
+  if (!auth) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  // Only admin/owner can modify campaigns
+  if (!isAdmin(auth)) {
+    return NextResponse.json({ error: "Forbidden: admin access required" }, { status: 403 });
+  }
+
+  const supabase = await createClient();
   const body = await request.json();
   const { id, name, vertical } = body;
 
   if (!id) {
     return NextResponse.json({ error: "Campaign ID is required" }, { status: 400 });
+  }
+
+  // Verify campaign belongs to user's org
+  const { data: campaign, error: fetchError } = await supabase
+    .from("campaigns")
+    .select("id")
+    .eq("id", id)
+    .eq("org_id", auth.orgId)
+    .single();
+
+  if (fetchError || !campaign) {
+    return NextResponse.json({ error: "Campaign not found" }, { status: 404 });
   }
 
   const updates: Record<string, unknown> = {
@@ -95,6 +132,7 @@ export async function PATCH(request: NextRequest) {
     .from("campaigns")
     .update(updates)
     .eq("id", id)
+    .eq("org_id", auth.orgId)
     .select()
     .single();
 

@@ -1,7 +1,19 @@
 import { NextResponse } from "next/server";
-import { supabase } from "@/lib/supabase";
+import { createClient } from "@/lib/supabase/server";
+import { getAuthContext } from "@/lib/supabase/auth";
 
+/**
+ * GET /api/dashboard/stats
+ * Fetches dashboard statistics for the authenticated user's organization.
+ */
 export async function GET() {
+  // Verify user is authenticated and has org context
+  const auth = await getAuthContext();
+  if (!auth) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const supabase = await createClient();
   const now = new Date();
 
   // Today start (midnight UTC)
@@ -13,6 +25,9 @@ export async function GET() {
   const yesterdayStart = new Date(todayStart);
   yesterdayStart.setUTCDate(yesterdayStart.getUTCDate() - 1);
   const yesterdayISO = yesterdayStart.toISOString();
+
+  // Helper to add org filter to all queries
+  const orgQuery = () => supabase.from("calls_overview").select("*", { count: "exact", head: true }).eq("org_id", auth.orgId);
 
   // Run all queries in parallel
   const [
@@ -35,22 +50,22 @@ export async function GET() {
     revenueAtRiskResult,
   ] = await Promise.all([
     // Today
-    supabase.from("calls_overview").select("*", { count: "exact", head: true }).gte("start_time_utc", todayISO),
-    supabase.from("calls_overview").select("*", { count: "exact", head: true }).gte("start_time_utc", todayISO).eq("status", "flagged"),
-    supabase.from("calls_overview").select("*", { count: "exact", head: true }).gte("start_time_utc", todayISO).eq("status", "safe"),
+    orgQuery().gte("start_time_utc", todayISO),
+    orgQuery().gte("start_time_utc", todayISO).eq("status", "flagged"),
+    orgQuery().gte("start_time_utc", todayISO).eq("status", "safe"),
     // Yesterday
-    supabase.from("calls_overview").select("*", { count: "exact", head: true }).gte("start_time_utc", yesterdayISO).lt("start_time_utc", todayISO),
-    supabase.from("calls_overview").select("*", { count: "exact", head: true }).gte("start_time_utc", yesterdayISO).lt("start_time_utc", todayISO).eq("status", "flagged"),
+    orgQuery().gte("start_time_utc", yesterdayISO).lt("start_time_utc", todayISO),
+    orgQuery().gte("start_time_utc", yesterdayISO).lt("start_time_utc", todayISO).eq("status", "flagged"),
     // Overall
-    supabase.from("calls_overview").select("*", { count: "exact", head: true }).eq("status", "flagged"),
-    supabase.from("calls_overview").select("*", { count: "exact", head: true }).eq("status", "safe"),
+    orgQuery().eq("status", "flagged"),
+    orgQuery().eq("status", "safe"),
     // Queue
-    supabase.from("calls_overview").select("*", { count: "exact", head: true }).eq("status", "pending"),
-    supabase.from("calls_overview").select("*", { count: "exact", head: true }).eq("status", "downloaded"),
-    supabase.from("calls_overview").select("*", { count: "exact", head: true }).eq("status", "processing"),
-    supabase.from("calls_overview").select("*", { count: "exact", head: true }).eq("status", "transcribed"),
+    orgQuery().eq("status", "pending"),
+    orgQuery().eq("status", "downloaded"),
+    orgQuery().eq("status", "processing"),
+    orgQuery().eq("status", "transcribed"),
     // Revenue - fetch actual data
-    supabase.from("calls_overview").select("revenue").eq("status", "flagged").not("revenue", "is", null),
+    supabase.from("calls_overview").select("revenue").eq("org_id", auth.orgId).eq("status", "flagged").not("revenue", "is", null),
   ]);
 
   // Extract counts

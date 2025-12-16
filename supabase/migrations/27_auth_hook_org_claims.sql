@@ -19,11 +19,11 @@ SET search_path = public
 AS $$
 DECLARE
     claims JSONB;
-    user_id UUID;
+    v_user_id UUID;
     org_record RECORD;
 BEGIN
     -- Extract the user ID from the event
-    user_id := (event->>'user_id')::UUID;
+    v_user_id := (event->>'user_id')::UUID;
 
     -- Get current claims
     claims := event->'claims';
@@ -37,7 +37,7 @@ BEGIN
     INTO org_record
     FROM core.organization_members om
     JOIN core.organizations o ON o.id = om.org_id
-    WHERE om.user_id = user_id
+    WHERE om.user_id = v_user_id
       AND om.accepted_at IS NOT NULL
       AND o.is_active = true
     ORDER BY om.created_at ASC  -- First org they joined

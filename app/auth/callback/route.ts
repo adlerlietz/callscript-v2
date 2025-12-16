@@ -16,13 +16,15 @@ export async function GET(request: Request) {
 
     if (error) {
       console.error("Auth callback error:", error.message, error);
+      // Return error details for debugging
+      return NextResponse.redirect(
+        `${origin}/login?error=${encodeURIComponent(error.message)}`
+      );
     }
 
-    if (!error) {
-      return NextResponse.redirect(`${origin}${next}`);
-    }
+    return NextResponse.redirect(`${origin}${next}`);
   }
 
   // Return to login with error
-  return NextResponse.redirect(`${origin}/login?error=auth_failed`);
+  return NextResponse.redirect(`${origin}/login?error=no_code_provided`);
 }

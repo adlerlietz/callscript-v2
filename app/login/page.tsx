@@ -120,7 +120,7 @@ function LoginForm() {
 
           {(error || authError) && (
             <div className="rounded-md bg-red-500/10 border border-red-500/20 px-4 py-3">
-              <p className="text-sm text-red-400">{error || "Authentication failed. Please try again."}</p>
+              <p className="text-sm text-red-400">{error || authError || "Authentication failed. Please try again."}</p>
             </div>
           )}
 

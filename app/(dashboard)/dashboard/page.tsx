@@ -4,11 +4,22 @@ import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 import {
   RefreshCw, Phone, AlertTriangle, CheckCircle,
-  DollarSign, Activity, ArrowRight
+  DollarSign, Activity, ArrowRight, Zap, Clock
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { StatCard, QueueStatus } from "@/components/stat-card";
 import { cn } from "@/lib/utils";
+
+interface HealthData {
+  status: "healthy" | "degraded" | "unhealthy";
+  latency_ms: number;
+  metrics: {
+    stuck_jobs: number;
+    throughput_1h: number;
+    recent_activity: number;
+  };
+  warnings?: string[];
+}
 
 interface DashboardStats {
   today: {
@@ -41,6 +52,7 @@ interface DashboardStats {
 
 export default function DashboardPage() {
   const [stats, setStats] = useState<DashboardStats | null>(null);
+  const [health, setHealth] = useState<HealthData | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -50,10 +62,21 @@ export default function DashboardPage() {
     if (showRefresh) setRefreshing(true);
 
     try {
-      const res = await fetch("/api/dashboard/stats");
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      setStats(data);
+      // Fetch both stats and health in parallel
+      const [statsRes, healthRes] = await Promise.all([
+        fetch("/api/dashboard/stats"),
+        fetch("/api/health"),
+      ]);
+
+      if (!statsRes.ok) throw new Error(`HTTP ${statsRes.status}`);
+      const statsData = await statsRes.json();
+      setStats(statsData);
+
+      if (healthRes.ok) {
+        const healthData = await healthRes.json();
+        setHealth(healthData);
+      }
+
       setLastUpdated(new Date());
       setError(null);
     } catch (err) {
@@ -261,22 +284,70 @@ export default function DashboardPage() {
             </div>
           </div>
 
-          {/* System Status */}
+          {/* System Health */}
           <div className="rounded-lg border border-zinc-800 bg-zinc-900 p-4">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-3">
                 <div className={cn(
                   "h-3 w-3 rounded-full",
-                  stats.systemHealth === "operational" ? "bg-emerald-500 animate-pulse" : "bg-red-500"
+                  health?.status === "healthy" ? "bg-emerald-500 animate-pulse" :
+                  health?.status === "degraded" ? "bg-yellow-500 animate-pulse" : "bg-red-500"
                 )} />
                 <span className="text-sm font-medium text-zinc-300">
-                  System Status: {stats.systemHealth === "operational" ? "All Systems Operational" : "Issues Detected"}
+                  Pipeline Status: {
+                    health?.status === "healthy" ? "All Systems Operational" :
+                    health?.status === "degraded" ? "Degraded Performance" : "Issues Detected"
+                  }
                 </span>
               </div>
               <span className="text-xs text-zinc-500">
-                Updated: {new Date(stats.timestamp).toLocaleTimeString()}
+                Latency: {health?.latency_ms || 0}ms
               </span>
             </div>
+
+            {/* Health Metrics */}
+            {health && (
+              <div className="grid grid-cols-3 gap-4 pt-3 border-t border-zinc-800">
+                <div className="flex items-center gap-2">
+                  <Zap className="h-4 w-4 text-emerald-400" />
+                  <div>
+                    <p className="text-xs text-zinc-500">Throughput (1h)</p>
+                    <p className="text-sm font-medium text-zinc-200">{health.metrics.throughput_1h} calls</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Clock className="h-4 w-4 text-yellow-400" />
+                  <div>
+                    <p className="text-xs text-zinc-500">Stuck Jobs</p>
+                    <p className={cn(
+                      "text-sm font-medium",
+                      health.metrics.stuck_jobs > 0 ? "text-yellow-400" : "text-zinc-200"
+                    )}>
+                      {health.metrics.stuck_jobs}
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Activity className="h-4 w-4 text-blue-400" />
+                  <div>
+                    <p className="text-xs text-zinc-500">Recent Activity</p>
+                    <p className="text-sm font-medium text-zinc-200">{health.metrics.recent_activity} events</p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Warnings */}
+            {health?.warnings && health.warnings.length > 0 && (
+              <div className="mt-3 pt-3 border-t border-zinc-800">
+                {health.warnings.map((warning, i) => (
+                  <div key={i} className="flex items-center gap-2 text-yellow-400">
+                    <AlertTriangle className="h-3 w-3" />
+                    <span className="text-xs">{warning}</span>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </>
       )}

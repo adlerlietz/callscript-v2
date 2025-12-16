@@ -44,10 +44,11 @@ export async function updateSession(request: NextRequest) {
   const isNoAccessPage = request.nextUrl.pathname === "/no-access";
   const isPublicRoute = request.nextUrl.pathname.startsWith("/api/public");
   const isAuthCallback = request.nextUrl.pathname === "/auth/callback";
+  const isHealthCheck = request.nextUrl.pathname === "/api/health";
   const isApiRoute = request.nextUrl.pathname.startsWith("/api/");
 
   // If no user and trying to access protected route, redirect to login
-  if (!user && !isLoginPage && !isPublicRoute && !isAuthCallback && !isNoAccessPage) {
+  if (!user && !isLoginPage && !isPublicRoute && !isAuthCallback && !isNoAccessPage && !isHealthCheck) {
     const url = request.nextUrl.clone();
     url.pathname = "/login";
     return NextResponse.redirect(url);

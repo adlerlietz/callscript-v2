@@ -306,17 +306,18 @@ export default function GeneralSettingsPage() {
           </div>
           <div className="flex-1">
             <div className="flex items-center justify-between mb-1">
-              <h3 className="text-sm font-medium text-zinc-100">Team Members</h3>
-              {(currentUserRole === "owner" || currentUserRole === "admin") && (
-                <Button
-                  size="sm"
-                  onClick={() => setShowInviteModal(true)}
-                  className="h-8"
-                >
-                  <UserPlus className="h-4 w-4 mr-2" />
-                  Invite
-                </Button>
-              )}
+              <div className="flex items-center gap-2">
+                <h3 className="text-sm font-medium text-zinc-100">Team Members</h3>
+                <span className="text-xs text-zinc-500">(Your role: {currentUserRole || "loading..."})</span>
+              </div>
+              <Button
+                size="sm"
+                onClick={() => setShowInviteModal(true)}
+                className="h-8"
+              >
+                <UserPlus className="h-4 w-4 mr-2" />
+                Invite
+              </Button>
             </div>
             <p className="text-sm text-zinc-500 mb-6">
               Manage who has access to your organization.

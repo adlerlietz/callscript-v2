@@ -74,6 +74,7 @@ export default function ConnectionsPage() {
   const [ringbaStatus, setRingbaStatus] = useState<"connected" | "error" | "not_configured">("not_configured");
   const [lastSync, setLastSync] = useState<string | null>(null);
   const [testingRingba, setTestingRingba] = useState(false);
+  const [ringbaTestResult, setRingbaTestResult] = useState<{ success: boolean; message: string } | null>(null);
 
   // Slack state
   const [slackUrl, setSlackUrl] = useState("");
@@ -96,12 +97,15 @@ export default function ConnectionsPage() {
     try {
       // Fetch org settings
       const res = await fetch("/api/settings/org");
+      console.log("[v2.1] Fetch settings response status:", res.status);
       if (res.ok) {
         const data = await res.json();
+        console.log("[v2.1] Fetched settings data:", data);
         const settings: Record<string, unknown> = {};
         for (const s of data.settings || []) {
           settings[s.key] = s.value;
         }
+        console.log("Parsed settings:", settings);
 
         setRingbaAccountId(String(settings.ringba_account_id || ""));
         setRingbaToken(String(settings.ringba_api_token || ""));
@@ -115,13 +119,13 @@ export default function ConnectionsPage() {
         }
 
         // Determine Ringba status
-        if (settings.ringba_account_id && settings.ringba_api_token) {
-          const token = String(settings.ringba_api_token);
-          if (token && token !== '""') {
-            setRingbaStatus("connected");
-          } else {
-            setRingbaStatus("not_configured");
-          }
+        const accountId = String(settings.ringba_account_id || "");
+        const token = String(settings.ringba_api_token || "");
+        // Token is masked after save (starts with ••••), which means it's configured
+        if (accountId && accountId !== '""' && token && token !== '""') {
+          setRingbaStatus("connected");
+        } else {
+          setRingbaStatus("not_configured");
         }
       }
 
@@ -182,7 +186,7 @@ export default function ConnectionsPage() {
   const handleSave = async () => {
     setSaving(true);
     try {
-      await fetch("/api/settings/org", {
+      const res = await fetch("/api/settings/org", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -198,7 +202,25 @@ export default function ConnectionsPage() {
           },
         }),
       });
+
+      const data = await res.json();
+      console.log("Save response:", data);
+
+      if (!res.ok) {
+        alert(`Failed to save: ${data.error || "Unknown error"}`);
+        return;
+      }
+
+      // If Ringba credentials were saved successfully, update status immediately
+      if (ringbaAccountId && ringbaToken && !ringbaToken.startsWith("••••")) {
+        setRingbaStatus("connected");
+        setRingbaTestResult({ success: true, message: "Settings saved successfully" });
+      }
+
       await fetchSettings();
+    } catch (err) {
+      console.error("Save error:", err);
+      alert(`Save failed: ${err instanceof Error ? err.message : "Unknown error"}`);
     } finally {
       setSaving(false);
     }
@@ -207,6 +229,7 @@ export default function ConnectionsPage() {
   // Test Ringba connection
   const handleTestRingba = async () => {
     setTestingRingba(true);
+    setRingbaTestResult(null);
     try {
       const res = await fetch("/api/settings/ringba-test", {
         method: "POST",
@@ -220,13 +243,18 @@ export default function ConnectionsPage() {
       if (data.success) {
         setRingbaStatus("connected");
         setLastSync("Just now");
+        setRingbaTestResult({ success: true, message: data.message });
       } else {
         setRingbaStatus("error");
-        alert(`Connection failed: ${data.error}`);
+        const errorMsg = data.details
+          ? `${data.error} | ${data.details}`
+          : data.error;
+        setRingbaTestResult({ success: false, message: errorMsg });
       }
     } catch (err) {
       setRingbaStatus("error");
       console.error("Ringba test failed:", err);
+      setRingbaTestResult({ success: false, message: `Network error: ${err instanceof Error ? err.message : "Unknown"}` });
     } finally {
       setTestingRingba(false);
     }
@@ -389,6 +417,20 @@ export default function ConnectionsPage() {
                   )}
                   Test Connection
                 </Button>
+
+                {ringbaTestResult && (
+                  <div
+                    className={cn(
+                      "mt-3 p-3 rounded-md text-sm break-all",
+                      ringbaTestResult.success
+                        ? "bg-emerald-950/30 border border-emerald-700 text-emerald-300"
+                        : "bg-red-950/30 border border-red-700 text-red-300"
+                    )}
+                  >
+                    {ringbaTestResult.success ? "✓ " : "✗ "}
+                    {ringbaTestResult.message}
+                  </div>
+                )}
               </div>
             </div>
           </div>

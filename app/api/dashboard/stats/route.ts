@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
+import { createClient, createSimpleAdminClient } from "@/lib/supabase/server";
 import { getAuthContext } from "@/lib/supabase/auth";
 
 /**
@@ -48,6 +48,8 @@ export async function GET() {
     transcribedResult,
     // Revenue at risk (flagged calls with revenue)
     revenueAtRiskResult,
+    // Ringba configuration check
+    ringbaSettingsResult,
   ] = await Promise.all([
     // Today
     orgQuery().gte("start_time_utc", todayISO),
@@ -66,6 +68,8 @@ export async function GET() {
     orgQuery().eq("status", "transcribed"),
     // Revenue - fetch actual data
     supabase.from("calls_overview").select("revenue").eq("org_id", auth.orgId).eq("status", "flagged").not("revenue", "is", null),
+    // Ringba settings (use admin client to bypass RLS on settings)
+    createSimpleAdminClient().from("settings").select("key, value").eq("org_id", auth.orgId).in("key", ["ringba_account_id", "ringba_api_token"]),
   ]);
 
   // Extract counts
@@ -88,6 +92,36 @@ export async function GET() {
     (sum, row) => sum + (Number(row.revenue) || 0),
     0
   );
+
+  // Check if Ringba is configured
+  const ringbaSettings = ringbaSettingsResult.data ?? [];
+  const ringbaAccountIdRaw = ringbaSettings.find((s: { key: string; value: unknown }) => s.key === "ringba_account_id")?.value;
+  const ringbaTokenRaw = ringbaSettings.find((s: { key: string; value: unknown }) => s.key === "ringba_api_token")?.value;
+
+  // Parse JSON values safely - settings are stored as JSON strings
+  // The value could be a string, JSON string, or already parsed
+  const parseSettingValue = (val: unknown): string => {
+    if (!val) return "";
+    if (typeof val === "string") {
+      // Try to parse as JSON first (value might be `"\"actual_value\""`)
+      try {
+        const parsed = JSON.parse(val);
+        return typeof parsed === "string" ? parsed : "";
+      } catch {
+        // Not JSON, use as-is
+        return val;
+      }
+    }
+    return String(val);
+  };
+
+  const ringbaAccountId = parseSettingValue(ringbaAccountIdRaw);
+  const ringbaToken = parseSettingValue(ringbaTokenRaw);
+  const hasAccountId = ringbaAccountId && ringbaAccountId !== "";
+  const hasToken = ringbaToken && ringbaToken !== "";
+  const ringbaConfigured = hasAccountId && hasToken;
+
+  console.log(`Dashboard stats - Ringba config check: accountId="${ringbaAccountId?.slice(0,10)}...", hasToken=${hasToken}, configured=${ringbaConfigured}`);
 
   // Calculate percentages and changes
   const todayReviewed = todayFlagged + todaySafe;
@@ -142,6 +176,8 @@ export async function GET() {
     revenueAtRisk: Math.round(revenueAtRisk * 100) / 100,
     // System status
     systemHealth: "operational",
+    // Integration status
+    ringbaConfigured,
     timestamp: now.toISOString(),
   });
 }

@@ -89,3 +89,20 @@ export async function createAdminClient() {
     }
   );
 }
+
+/**
+ * Creates a simple Supabase admin client without cookie handling.
+ * Use for API routes that don't need session management.
+ */
+export function createSimpleAdminClient() {
+  // Import directly to avoid SSR cookie issues
+  const { createClient } = require("@supabase/supabase-js");
+
+  return createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    {
+      auth: { persistSession: false },
+    }
+  );
+}

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
+import { createClient, createSimpleAdminClient } from "@/lib/supabase/server";
 import { getAuthContext, isAdmin } from "@/lib/supabase/auth";
 
 /**
@@ -51,7 +51,10 @@ export async function GET() {
     return NextResponse.json({ error: "Forbidden: admin access required" }, { status: 403 });
   }
 
-  const supabase = await createClient();
+  // Use admin client to bypass RLS for settings read
+  const supabase = createSimpleAdminClient();
+
+  console.log(`GET /api/settings/org - fetching for org_id: ${auth.orgId}`);
 
   const { data: settings, error } = await supabase
     .from("settings")
@@ -59,9 +62,24 @@ export async function GET() {
     .eq("org_id", auth.orgId)
     .order("key");
 
+  console.log(`Settings query result: ${settings?.length || 0} rows, error: ${error?.message || "none"}`);
+
   if (error) {
     // Table doesn't exist yet, return defaults
-    console.warn("Settings table not found, using defaults:", error.message);
+    console.warn("Settings table error, using defaults:", error.message);
+    const defaults = Object.entries(DEFAULT_SETTINGS).map(([key, config]) => ({
+      key,
+      value: config.is_secret && config.value ? maskSecret(config.value) : config.value,
+      description: config.description,
+      is_secret: config.is_secret,
+      updated_at: null,
+    }));
+    return NextResponse.json({ settings: defaults });
+  }
+
+  // If no settings found for this org, return defaults
+  if (!settings || settings.length === 0) {
+    console.log("No settings found for org, returning defaults");
     const defaults = Object.entries(DEFAULT_SETTINGS).map(([key, config]) => ({
       key,
       value: config.is_secret && config.value ? maskSecret(config.value) : config.value,
@@ -73,7 +91,7 @@ export async function GET() {
   }
 
   // Mask secret values
-  const masked = (settings || []).map((s) => ({
+  const masked = settings.map((s: { key: string; value: unknown; description: string; is_secret: boolean; updated_at: string }) => ({
     ...s,
     value: s.is_secret && s.value ? maskSecret(s.value) : s.value,
   }));
@@ -98,9 +116,12 @@ export async function PATCH(request: NextRequest) {
     return NextResponse.json({ error: "Forbidden: admin access required" }, { status: 403 });
   }
 
-  const supabase = await createClient();
+  // Use admin client to bypass RLS for settings upsert
+  const supabase = createSimpleAdminClient();
   const body = await request.json();
   const { updates } = body as { updates: Record<string, unknown> };
+
+  console.log(`PATCH /api/settings/org - org_id: ${auth.orgId}, updates keys: ${Object.keys(updates || {}).join(", ")}`);
 
   if (!updates || typeof updates !== "object") {
     return NextResponse.json({ error: "Updates object is required" }, { status: 400 });
@@ -108,10 +129,22 @@ export async function PATCH(request: NextRequest) {
 
   const results: Record<string, boolean> = {};
 
+  // Track Ringba credentials for vault storage
+  let ringbaAccountId: string | null = null;
+  let ringbaApiToken: string | null = null;
+
   for (const [key, value] of Object.entries(updates)) {
     // Skip if value is masked (user didn't change it)
     if (typeof value === "string" && value.startsWith("••••")) {
       continue;
+    }
+
+    // Track Ringba credentials for later vault storage
+    if (key === "ringba_account_id" && typeof value === "string" && value.trim()) {
+      ringbaAccountId = value.trim();
+    }
+    if (key === "ringba_api_token" && typeof value === "string" && value.trim()) {
+      ringbaApiToken = value.trim();
     }
 
     // Get default config for this key (for description and is_secret)
@@ -120,25 +153,91 @@ export async function PATCH(request: NextRequest) {
       is_secret: false,
     };
 
-    // Use upsert to create or update the setting (include org_id)
-    const { error } = await supabase
-      .from("settings")
-      .upsert({
-        org_id: auth.orgId,
-        key,
-        value: JSON.stringify(value),
-        description: defaultConfig.description,
-        is_secret: defaultConfig.is_secret,
-        updated_at: new Date().toISOString(),
-      }, {
-        onConflict: "org_id,key",
-      });
+    // Use dedicated RPC to upsert setting (bypasses view trigger issues)
+    const { error } = await supabase.rpc("upsert_setting", {
+      p_org_id: auth.orgId,
+      p_key: key,
+      p_value: JSON.stringify(value),
+      p_description: defaultConfig.description,
+      p_is_secret: defaultConfig.is_secret,
+    });
 
     if (error) {
       console.error(`Failed to upsert setting ${key}:`, error);
       results[key] = false;
     } else {
+      console.log(`Successfully saved setting ${key} for org ${auth.orgId}`);
       results[key] = true;
+    }
+  }
+
+  // Store Ringba credentials in vault for multi-org worker access
+  // Need both account_id and token to store in vault
+  if (ringbaAccountId && ringbaApiToken) {
+    try {
+      const adminClient = createSimpleAdminClient();
+      const { error: vaultError } = await adminClient.rpc("store_org_credential", {
+        p_org_id: auth.orgId,
+        p_provider: "ringba",
+        p_account_id: ringbaAccountId,
+        p_token: ringbaApiToken,
+      });
+
+      if (vaultError) {
+        console.error("Failed to store credentials in vault:", vaultError);
+        // Don't fail the entire request, just note the error
+        results["_vault_storage"] = false;
+      } else {
+        console.log(`Stored Ringba credentials in vault for org ${auth.orgId}`);
+        results["_vault_storage"] = true;
+      }
+    } catch (err) {
+      console.error("Vault storage exception:", err);
+      results["_vault_storage"] = false;
+    }
+  } else if (ringbaAccountId || ringbaApiToken) {
+    // Only one credential provided - need to fetch the other from settings
+    try {
+      const adminClient = createSimpleAdminClient();
+
+      // Fetch the missing credential from settings
+      const { data: existingSettings } = await adminClient
+        .from("settings")
+        .select("key, value")
+        .eq("org_id", auth.orgId)
+        .in("key", ["ringba_account_id", "ringba_api_token"]);
+
+      const settingsMap: Record<string, string> = {};
+      existingSettings?.forEach((s: { key: string; value: string }) => {
+        try {
+          settingsMap[s.key] = JSON.parse(s.value);
+        } catch {
+          settingsMap[s.key] = s.value;
+        }
+      });
+
+      const finalAccountId = ringbaAccountId || settingsMap["ringba_account_id"];
+      const finalToken = ringbaApiToken || settingsMap["ringba_api_token"];
+
+      if (finalAccountId && finalToken) {
+        const { error: vaultError } = await adminClient.rpc("store_org_credential", {
+          p_org_id: auth.orgId,
+          p_provider: "ringba",
+          p_account_id: finalAccountId,
+          p_token: finalToken,
+        });
+
+        if (vaultError) {
+          console.error("Failed to store credentials in vault:", vaultError);
+          results["_vault_storage"] = false;
+        } else {
+          console.log(`Stored Ringba credentials in vault for org ${auth.orgId}`);
+          results["_vault_storage"] = true;
+        }
+      }
+    } catch (err) {
+      console.error("Vault storage exception:", err);
+      results["_vault_storage"] = false;
     }
   }
 

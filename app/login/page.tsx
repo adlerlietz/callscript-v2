@@ -1,6 +1,7 @@
 "use client";
 
 import { Suspense, useState } from "react";
+import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Activity, Loader2, Mail } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -177,8 +178,11 @@ function LoginForm() {
       </div>
 
       {/* Footer */}
-      <p className="mt-8 text-center text-xs text-zinc-600">
-        Invite-only access. Contact admin for credentials.
+      <p className="mt-8 text-center text-sm text-zinc-500">
+        Don&apos;t have an account?{" "}
+        <Link href="/signup" className="text-zinc-300 hover:text-zinc-100">
+          Sign up
+        </Link>
       </p>
     </div>
   );

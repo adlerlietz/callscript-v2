@@ -37,32 +37,98 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  // Validate Account ID format - Ringba Account IDs typically start with "RA"
+  // and are alphanumeric (e.g., "RA1234abcd")
+  const cleanedAccountId = accountId.trim();
+  if (!cleanedAccountId.match(/^[A-Za-z0-9_-]+$/)) {
+    return NextResponse.json(
+      { success: false, error: "Invalid Account ID format - should be alphanumeric (e.g., RA1234abcd)" },
+      { status: 400 }
+    );
+  }
+
   try {
     // Test Ringba API by fetching a small sample
-    const response = await fetch(
-      `https://api.ringba.com/v2/${accountId}/calllogs?dateStart=${encodeURIComponent(
-        new Date(Date.now() - 60000).toISOString() // Last minute
-      )}&dateEnd=${encodeURIComponent(new Date().toISOString())}&pageSize=1`,
-      {
+    // Ringba requires POST with JSON body for calllogs endpoint
+    const now = new Date();
+    const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
+
+    // Trim credentials to remove accidental whitespace
+    const cleanAccountId = accountId.trim();
+    const cleanToken = token.trim();
+
+    // Log for debugging (safe - shows first/last chars of token)
+    const tokenPreview = cleanToken.length > 10
+      ? `${cleanToken.slice(0, 6)}...${cleanToken.slice(-6)}`
+      : "too short";
+    console.log(`Testing Ringba connection: accountId="${cleanAccountId}", tokenLength=${cleanToken.length}, tokenPreview=${tokenPreview}`);
+
+    const payload = {
+      reportStart: oneHourAgo.toISOString(),
+      reportEnd: now.toISOString(),
+      size: 1,
+      offset: 0,
+      valueColumns: [
+        { column: "callDt" },
+        { column: "inboundCallId" },
+      ],
+    };
+
+    // Try with "Token" auth header first (Ringba standard)
+    const apiUrl = `https://api.ringba.com/v2/${cleanAccountId}/calllogs`;
+    console.log(`Ringba API URL: ${apiUrl}`);
+
+    let response = await fetch(apiUrl, {
+      method: "POST",
+      headers: {
+        Authorization: `Token ${cleanToken}`,
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+
+    console.log(`First attempt (Token auth) status: ${response.status}`);
+
+    // If 401, try with "Bearer" auth header (some accounts may use this)
+    if (response.status === 401) {
+      console.log("Trying Bearer auth...");
+      response = await fetch(apiUrl, {
+        method: "POST",
         headers: {
-          Authorization: `Token ${token}`,
+          Authorization: `Bearer ${cleanToken}`,
           "Content-Type": "application/json",
+          Accept: "application/json",
         },
-      }
-    );
+        body: JSON.stringify(payload),
+      });
+      console.log(`Second attempt (Bearer auth) status: ${response.status}`);
+    }
 
     if (!response.ok) {
       const text = await response.text();
+      console.error(`Ringba error response: ${text}`);
+
       if (response.status === 401) {
         return NextResponse.json(
-          { success: false, error: "Invalid API token" },
+          {
+            success: false,
+            error: "Invalid API token - please verify your token from Ringba settings",
+            details: `Account ID: "${cleanAccountId}", Token: ${cleanToken.length} chars (${tokenPreview}), Response: ${text.slice(0, 200)}`
+          },
           { status: 401 }
         );
       }
       if (response.status === 403) {
         return NextResponse.json(
-          { success: false, error: "Access denied - check account ID" },
+          { success: false, error: "Access denied - check account ID and token permissions" },
           { status: 403 }
+        );
+      }
+      if (response.status === 404) {
+        return NextResponse.json(
+          { success: false, error: `Invalid account ID "${cleanAccountId}" - account not found in Ringba` },
+          { status: 404 }
         );
       }
       return NextResponse.json(
@@ -72,11 +138,12 @@ export async function POST(request: NextRequest) {
     }
 
     const data = await response.json();
-    const totalCalls = data.totalCount || 0;
+    const records = data.report?.records || [];
+    const totalCalls = records.length;
 
     return NextResponse.json({
       success: true,
-      message: "Connected successfully",
+      message: `Connected successfully${totalCalls > 0 ? ` - found ${totalCalls} call(s) in last hour` : ""}`,
       totalCalls,
     });
   } catch (err) {

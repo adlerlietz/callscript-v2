@@ -41,32 +41,38 @@ export async function updateSession(request: NextRequest) {
 
   // Define protected and public routes
   const isLoginPage = request.nextUrl.pathname === "/login";
+  const isSignupPage = request.nextUrl.pathname === "/signup";
+  const isOnboardPage = request.nextUrl.pathname === "/onboard";
   const isNoAccessPage = request.nextUrl.pathname === "/no-access";
   const isPublicRoute = request.nextUrl.pathname.startsWith("/api/public");
   const isAuthCallback = request.nextUrl.pathname === "/auth/callback";
-  const isHealthCheck = request.nextUrl.pathname === "/api/health";
+  // Note: /api/health now requires auth, so it's not in the public list
+  const isOnboardApi = request.nextUrl.pathname === "/api/onboard";
   const isApiRoute = request.nextUrl.pathname.startsWith("/api/");
 
-  // If no user and trying to access protected route, redirect to login
-  if (!user && !isLoginPage && !isPublicRoute && !isAuthCallback && !isNoAccessPage && !isHealthCheck) {
+  // Public pages that don't require auth
+  const isPublicPage = isLoginPage || isSignupPage || isNoAccessPage;
+
+  // If no user and trying to access protected route, redirect to signup
+  if (!user && !isPublicPage && !isPublicRoute && !isAuthCallback) {
     const url = request.nextUrl.clone();
-    url.pathname = "/login";
+    url.pathname = "/signup";
     return NextResponse.redirect(url);
   }
 
-  // If user is logged in but has no org membership (no org_id in JWT), redirect to no-access
-  // This implements the invite-only model - users must be invited to an org first
-  if (user && !isLoginPage && !isNoAccessPage && !isAuthCallback && !isApiRoute) {
+  // If user is logged in but has no org, redirect to onboard
+  // (unless already on onboard page or API routes)
+  if (user && !isLoginPage && !isSignupPage && !isOnboardPage && !isNoAccessPage && !isAuthCallback && !isApiRoute) {
     const orgId = user.app_metadata?.org_id;
     if (!orgId) {
       const url = request.nextUrl.clone();
-      url.pathname = "/no-access";
+      url.pathname = "/onboard";
       return NextResponse.redirect(url);
     }
   }
 
-  // If user is logged in with org access and on login page, redirect to dashboard
-  if (user && isLoginPage) {
+  // If user has org and is on login/signup/onboard page, redirect to dashboard
+  if (user && (isLoginPage || isSignupPage || isOnboardPage)) {
     const orgId = user.app_metadata?.org_id;
     if (orgId) {
       const url = request.nextUrl.clone();

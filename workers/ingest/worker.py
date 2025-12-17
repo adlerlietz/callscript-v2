@@ -530,10 +530,15 @@ def run_backfill(
     token: str,
     start_time: datetime,
     end_time: datetime,
+    org_id: str = DEFAULT_ORG_ID,
     chunk_hours: int = 24,
+    lifo: bool = True,
 ) -> tuple[int, int]:
     """
     Run backfill for a date range, chunked into smaller windows.
+
+    LIFO Priority: Processes newest chunks first so recent calls
+    enter the pipeline before older ones.
 
     Args:
         repo: Ingest repository
@@ -541,30 +546,41 @@ def run_backfill(
         token: Ringba API token
         start_time: Start of backfill window
         end_time: End of backfill window
+        org_id: Organization ID to associate calls with
         chunk_hours: Size of each chunk in hours (default 24)
+        lifo: Process newest chunks first (default True)
 
     Returns:
         Tuple of (total_fetched, total_inserted)
     """
     total_fetched = 0
     total_inserted = 0
-    chunk_count = 0
 
-    current_start = start_time
     chunk_delta = timedelta(hours=chunk_hours)
 
-    logger.info(f"Backfill: {start_time.strftime('%Y-%m-%d %H:%M')} -> {end_time.strftime('%Y-%m-%d %H:%M')} UTC")
-    logger.info(f"Chunk size: {chunk_hours} hours")
-
+    # Build list of chunks
+    chunks = []
+    current_start = start_time
     while current_start < end_time:
         current_end = min(current_start + chunk_delta, end_time)
-        chunk_count += 1
+        chunks.append((current_start, current_end))
+        current_start = current_end
 
-        logger.info(f"[Chunk {chunk_count}] {current_start.strftime('%Y-%m-%d %H:%M')} -> {current_end.strftime('%Y-%m-%d %H:%M')}")
+    # LIFO: Reverse to process newest first
+    if lifo:
+        chunks.reverse()
+
+    total_chunks = len(chunks)
+    logger.info(f"Backfill: {start_time.strftime('%Y-%m-%d %H:%M')} -> {end_time.strftime('%Y-%m-%d %H:%M')} UTC")
+    logger.info(f"Chunk size: {chunk_hours} hours, Total chunks: {total_chunks}")
+    logger.info(f"Order: {'LIFO (newest first)' if lifo else 'FIFO (oldest first)'}")
+
+    for chunk_num, (chunk_start, chunk_end) in enumerate(chunks, 1):
+        logger.info(f"[Chunk {chunk_num}/{total_chunks}] {chunk_start.strftime('%Y-%m-%d %H:%M')} -> {chunk_end.strftime('%Y-%m-%d %H:%M')}")
 
         try:
             # Fetch from Ringba
-            records = fetch_ringba_calls(account_id, token, current_start, current_end)
+            records = fetch_ringba_calls(account_id, token, chunk_start, chunk_end)
 
             if records:
                 logger.info(f"  Fetched {len(records)} records")
@@ -582,10 +598,10 @@ def run_backfill(
                         campaign_id = repo.ensure_campaign(
                             ringba_campaign_id,
                             record.get("campaignName", "Unknown"),
-                            DEFAULT_ORG_ID,
+                            org_id,
                         )
 
-                    call = map_ringba_to_call(record, DEFAULT_ORG_ID, campaign_id)
+                    call = map_ringba_to_call(record, org_id, campaign_id)
                     calls.append(call)
 
                 # Upsert to database
@@ -601,10 +617,8 @@ def run_backfill(
             time.sleep(1)
 
         except Exception as e:
-            logger.error(f"  Error in chunk {chunk_count}: {e}")
+            logger.error(f"  Error in chunk {chunk_num}: {e}")
             # Continue to next chunk
-
-        current_start = current_end
 
     return total_fetched, total_inserted
 
@@ -653,6 +667,16 @@ def parse_args():
         type=int,
         default=24,
         help="Chunk size in hours for backfill (default: 24)",
+    )
+    parser.add_argument(
+        "--fifo",
+        action="store_true",
+        help="Process oldest chunks first (default is LIFO/newest first)",
+    )
+    parser.add_argument(
+        "--org-id",
+        type=str,
+        help="Specific org ID to backfill (for multi-org mode)",
     )
     return parser.parse_args()
 
@@ -711,6 +735,84 @@ def main():
     if args.multi_org:
         logger.info("Fetching organization credentials from database...")
 
+        # Fetch active orgs with credentials
+        orgs = get_active_org_credentials(client)
+
+        if not orgs:
+            logger.error("No organizations with Ringba credentials found")
+            sys.exit(1)
+
+        # Filter to specific org if --org-id provided
+        if args.org_id:
+            orgs = [o for o in orgs if o["org_id"] == args.org_id]
+            if not orgs:
+                logger.error(f"No credentials found for org_id: {args.org_id}")
+                sys.exit(1)
+
+        logger.info(f"Found {len(orgs)} organization(s) with Ringba credentials")
+
+        # ======================================================================
+        # MULTI-ORG BACKFILL MODE
+        # ======================================================================
+        if args.backfill:
+            now = datetime.now(timezone.utc)
+
+            # Determine time range
+            if args.start and args.end:
+                start_time = parse_datetime(args.start)
+                end_time = parse_datetime(args.end)
+            elif args.hours:
+                end_time = now
+                start_time = now - timedelta(hours=args.hours)
+            elif args.days:
+                end_time = now
+                start_time = now - timedelta(days=args.days)
+            else:
+                logger.error("Backfill mode requires --hours, --days, or --start/--end")
+                sys.exit(1)
+
+            use_lifo = not args.fifo
+            grand_total_fetched = 0
+            grand_total_inserted = 0
+
+            logger.info(f"Multi-org backfill: {len(orgs)} org(s)")
+            logger.info(f"Date range: {start_time.strftime('%Y-%m-%d')} -> {end_time.strftime('%Y-%m-%d')}")
+            logger.info(f"Order: {'LIFO (newest first)' if use_lifo else 'FIFO (oldest first)'}")
+            logger.info("=" * 60)
+
+            for i, org in enumerate(orgs, 1):
+                org_name = org.get("org_name", "Unknown")[:30]
+                logger.info(f"\n[Org {i}/{len(orgs)}] {org_name} ({org['org_id'][:8]}...)")
+
+                fetched, inserted = run_backfill(
+                    repo,
+                    org["account_id"],
+                    org["token"],
+                    start_time,
+                    end_time,
+                    org_id=org["org_id"],
+                    chunk_hours=args.chunk_hours,
+                    lifo=use_lifo,
+                )
+
+                grand_total_fetched += fetched
+                grand_total_inserted += inserted
+                logger.info(f"  [{org_name}] Backfill complete: {fetched} fetched, {inserted} new")
+
+            # Summary
+            logger.info("=" * 60)
+            logger.info("MULTI-ORG BACKFILL COMPLETE")
+            logger.info(f"Organizations processed: {len(orgs)}")
+            logger.info(f"Total fetched: {grand_total_fetched}")
+            logger.info(f"Total inserted: {grand_total_inserted}")
+            stats = repo.get_queue_stats()
+            logger.info(f"Queue stats: pending={stats.get('pending', 0)}")
+            logger.info("=" * 60)
+            return
+
+        # ======================================================================
+        # MULTI-ORG CONTINUOUS SYNC MODE
+        # ======================================================================
         # Log initial stats
         stats = repo.get_queue_stats()
         logger.info(f"Queue stats: pending={stats.get('pending', 0)}, total={sum(v for v in stats.values() if v > 0)}")
@@ -725,7 +827,7 @@ def main():
             try:
                 sync_count += 1
 
-                # Fetch active orgs with credentials
+                # Re-fetch active orgs each cycle (in case new orgs were added)
                 orgs = get_active_org_credentials(client)
 
                 if not orgs:
@@ -827,14 +929,19 @@ def main():
             logger.error("Backfill mode requires --hours, --days, or --start/--end")
             sys.exit(1)
 
-        # Run backfill
+        # LIFO is default, --fifo overrides
+        use_lifo = not args.fifo
+
+        # Run backfill (uses single-tenant env credentials)
         total_fetched, total_inserted = run_backfill(
             repo,
             account_id,
             token,
             start_time,
             end_time,
+            org_id=DEFAULT_ORG_ID,
             chunk_hours=args.chunk_hours,
+            lifo=use_lifo,
         )
 
         # Summary

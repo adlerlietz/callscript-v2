@@ -1,34 +1,36 @@
 import { NextResponse } from "next/server";
-import { createServerClient } from "@supabase/ssr";
+import { createClient } from "@/lib/supabase/server";
+import { getAuthContext } from "@/lib/supabase/auth";
 
 /**
  * GET /api/health
- * Public health check endpoint for uptime monitoring.
- * Returns pipeline status, queue depths, and processing metrics.
+ * Returns pipeline health metrics for the authenticated user's organization.
+ * All metrics are scoped to the user's org_id for multi-tenant isolation.
  */
 export async function GET() {
   const startTime = Date.now();
 
-  try {
-    // Create a simple client without cookies for health checks
-    const supabase = createServerClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-      {
-        cookies: {
-          getAll: () => [],
-          setAll: () => {},
-        },
-      }
-    );
+  // Require authentication for multi-tenant isolation
+  const auth = await getAuthContext();
+  if (!auth) {
+    console.log("[Health] No auth context - returning 401");
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
 
-    // Check database connectivity and get queue stats (using public view)
+  console.log(`[Health] Auth OK - org_id: ${auth.orgId}, user: ${auth.userId}`);
+
+  try {
+    const supabase = await createClient();
+
+    // Get queue stats filtered by org_id
     const { data: queueStats, error: queueError } = await supabase
       .from("calls_overview")
       .select("status")
+      .eq("org_id", auth.orgId)
       .limit(10000);
 
     if (queueError) {
+      console.error(`[Health] Queue query failed for org ${auth.orgId}:`, queueError.message);
       return NextResponse.json({
         status: "unhealthy",
         error: "Database connection failed",
@@ -38,30 +40,34 @@ export async function GET() {
       }, { status: 503 });
     }
 
+    console.log(`[Health] Queue query OK - ${queueStats?.length || 0} calls found for org ${auth.orgId}`);
+
     // Calculate queue depths by status
     const statusCounts: Record<string, number> = {};
     queueStats?.forEach((call) => {
       statusCounts[call.status] = (statusCounts[call.status] || 0) + 1;
     });
 
-    // Get recent processing activity (last hour)
+    // Get recent processing activity (last hour) for this org
     const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
     const { data: recentActivity } = await supabase
       .from("calls_overview")
       .select("id, status, updated_at")
+      .eq("org_id", auth.orgId)
       .gte("updated_at", oneHourAgo)
       .order("updated_at", { ascending: false })
       .limit(100);
 
-    // Check for stuck jobs (processing for > 30 minutes)
+    // Check for stuck jobs (processing for > 30 minutes) for this org
     const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
     const { data: stuckJobs } = await supabase
       .from("calls_overview")
       .select("id")
+      .eq("org_id", auth.orgId)
       .eq("status", "processing")
       .lt("updated_at", thirtyMinutesAgo);
 
-    // Calculate health score
+    // Calculate health metrics
     const stuckCount = stuckJobs?.length || 0;
     const pendingCount = statusCounts["pending"] || 0;
     const processingCount = statusCounts["processing"] || 0;
@@ -95,6 +101,8 @@ export async function GET() {
       (c) => c.status === "transcribed" || c.status === "flagged" || c.status === "safe"
     ).length || 0;
 
+    console.log(`[Health] Final status: ${overallStatus}, warnings: ${warnings.join(", ") || "none"}`);
+
     return NextResponse.json({
       status: overallStatus,
       timestamp: new Date().toISOString(),
@@ -120,6 +128,7 @@ export async function GET() {
     });
 
   } catch (error) {
+    console.error(`[Health] Exception:`, error instanceof Error ? error.message : error);
     return NextResponse.json({
       status: "unhealthy",
       error: "Health check failed",

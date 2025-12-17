@@ -4,7 +4,7 @@ import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 import {
   RefreshCw, Phone, AlertTriangle, CheckCircle,
-  DollarSign, Activity, ArrowRight, Zap, Clock
+  DollarSign, Activity, ArrowRight, Zap, Clock, Link2, X
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { StatCard, QueueStatus } from "@/components/stat-card";
@@ -13,12 +13,14 @@ import { cn } from "@/lib/utils";
 interface HealthData {
   status: "healthy" | "degraded" | "unhealthy";
   latency_ms: number;
-  metrics: {
+  metrics?: {
     stuck_jobs: number;
     throughput_1h: number;
     recent_activity: number;
   };
   warnings?: string[];
+  error?: string;
+  details?: string;
 }
 
 interface DashboardStats {
@@ -47,6 +49,7 @@ interface DashboardStats {
   };
   revenueAtRisk: number;
   systemHealth: string;
+  ringbaConfigured: boolean;
   timestamp: string;
 }
 
@@ -57,6 +60,7 @@ export default function DashboardPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [bannerDismissed, setBannerDismissed] = useState(false);
 
   const fetchStats = useCallback(async (showRefresh = false) => {
     if (showRefresh) setRefreshing(true);
@@ -75,6 +79,19 @@ export default function DashboardPage() {
       if (healthRes.ok) {
         const healthData = await healthRes.json();
         setHealth(healthData);
+      } else {
+        // Log health endpoint errors for debugging
+        console.warn(`[Dashboard] Health endpoint failed with status ${healthRes.status}`);
+        try {
+          const errorData = await healthRes.json();
+          console.warn("[Dashboard] Health error:", errorData);
+          // If we got a proper error response, use it to show status
+          if (errorData.status) {
+            setHealth(errorData);
+          }
+        } catch {
+          // Ignore JSON parse errors
+        }
       }
 
       setLastUpdated(new Date());
@@ -141,6 +158,41 @@ export default function DashboardPage() {
       {error && (
         <div className="mb-6 p-4 rounded-lg bg-red-500/10 border border-red-500/30">
           <p className="text-sm text-red-400">{error}</p>
+        </div>
+      )}
+
+      {/* Ringba Setup Banner */}
+      {stats && !stats.ringbaConfigured && !bannerDismissed && (
+        <div className="mb-6 p-4 rounded-lg bg-amber-500/10 border border-amber-500/30">
+          <div className="flex items-start justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <div className="p-2 rounded-lg bg-amber-500/20">
+                <Link2 className="h-5 w-5 text-amber-400" />
+              </div>
+              <div>
+                <h3 className="text-sm font-medium text-amber-300">
+                  Connect your Ringba account
+                </h3>
+                <p className="text-sm text-amber-400/80 mt-0.5">
+                  Add your Ringba credentials in Settings to start syncing calls automatically.
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <Link href="/settings/connections">
+                <Button size="sm" variant="outline" className="border-amber-500/50 text-amber-300 hover:bg-amber-500/10">
+                  Go to Settings
+                  <ArrowRight className="h-4 w-4 ml-1" />
+                </Button>
+              </Link>
+              <button
+                onClick={() => setBannerDismissed(true)}
+                className="p-1 text-amber-400/60 hover:text-amber-300"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -306,7 +358,7 @@ export default function DashboardPage() {
             </div>
 
             {/* Health Metrics */}
-            {health && (
+            {health?.metrics && (
               <div className="grid grid-cols-3 gap-4 pt-3 border-t border-zinc-800">
                 <div className="flex items-center gap-2">
                   <Zap className="h-4 w-4 text-emerald-400" />
@@ -333,6 +385,16 @@ export default function DashboardPage() {
                     <p className="text-xs text-zinc-500">Recent Activity</p>
                     <p className="text-sm font-medium text-zinc-200">{health.metrics.recent_activity} events</p>
                   </div>
+                </div>
+              </div>
+            )}
+
+            {/* Error from health endpoint */}
+            {health?.error && (
+              <div className="mt-3 pt-3 border-t border-zinc-800">
+                <div className="flex items-center gap-2 text-red-400">
+                  <AlertTriangle className="h-3 w-3" />
+                  <span className="text-xs">{health.error}{health.details ? `: ${health.details}` : ""}</span>
                 </div>
               </div>
             )}

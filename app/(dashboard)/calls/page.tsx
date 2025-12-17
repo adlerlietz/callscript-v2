@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { createClient } from "@supabase/supabase-js";
 import {
   Search, RefreshCw, Clock, User, Loader2,
   AlertTriangle, Bug, ChevronDown, ChevronUp
@@ -17,12 +16,6 @@ import {
 } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
 
-// Initialize Supabase client
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-);
-
 // Correct TypeScript types matching database columns
 type Call = {
   id: string;
@@ -31,14 +24,14 @@ type Call = {
   start_time_utc: string;
   updated_at: string | null;
   caller_number: string | null;
-  duration_seconds: number | null;  // DB column name
+  duration_seconds: number | null;
   revenue: number | null;
   audio_url: string | null;
   storage_path: string | null;
   status: string;
   retry_count: number | null;
   processing_error: string | null;
-  transcript_text: string | null;   // DB column name
+  transcript_text: string | null;
   transcript_segments: unknown[] | null;
   qa_flags: QaFlags | null;
   qa_version: string | null;
@@ -168,7 +161,7 @@ function CallInspector({
   const [audioLoading, setAudioLoading] = useState(false);
   const [audioError, setAudioError] = useState<string | null>(null);
 
-  // Generate signed URL when call changes
+  // Generate signed URL via API when call changes
   useEffect(() => {
     if (!call) {
       setAudioUrl(null);
@@ -179,33 +172,30 @@ function CallInspector({
     setAudioUrl(null);
     setAudioError(null);
 
-    // Try to get audio URL - prefer storage signed URL, fallback to Ringba URL
-    if (call.storage_path) {
-      setAudioLoading(true);
-      supabase.storage
-        .from("calls_audio")
-        .createSignedUrl(call.storage_path, 3600) // 1 hour expiry
-        .then(({ data, error }) => {
-          if (error || !data?.signedUrl) {
-            // Storage failed - fallback to Ringba audio_url
-            console.warn("Storage URL failed, using Ringba URL:", error?.message);
-            if (call.audio_url) {
-              setAudioUrl(call.audio_url);
-              setAudioError(null); // Clear error since we have fallback
-            } else {
-              setAudioError("No audio available");
-            }
-          } else {
-            setAudioUrl(data.signedUrl);
-          }
-        })
-        .finally(() => setAudioLoading(false));
-    } else if (call.audio_url) {
-      // No storage_path - use Ringba URL directly
-      setAudioUrl(call.audio_url);
-    } else {
+    // Skip audio fetch if no storage_path and no audio_url
+    if (!call.storage_path && !call.audio_url) {
       setAudioError("No audio available for this call");
+      return;
     }
+
+    // Fetch signed audio URL from secure API
+    setAudioLoading(true);
+    fetch(`/api/calls/${call.id}/audio`)
+      .then(async (res) => {
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          throw new Error(data.error || "Failed to get audio URL");
+        }
+        return res.json();
+      })
+      .then((data) => {
+        setAudioUrl(data.url);
+      })
+      .catch((err) => {
+        console.error("Audio fetch error:", err);
+        setAudioError(err.message || "Failed to load audio");
+      })
+      .finally(() => setAudioLoading(false));
   }, [call]);
 
   if (!call) return null;
@@ -213,14 +203,15 @@ function CallInspector({
   const handleStatusUpdate = async (newStatus: string) => {
     setUpdating(true);
     try {
-      // Note: This requires proper RLS/service role setup
-      const { error } = await supabase
-        .from("calls_overview")
-        .update({ status: newStatus })
-        .eq("id", call.id);
+      const res = await fetch(`/api/calls/${call.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: newStatus }),
+      });
 
-      if (error) {
-        console.error("Status update error:", error);
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        console.error("Status update error:", data.error);
       } else {
         onStatusUpdate(call.id, newStatus);
       }
@@ -454,40 +445,48 @@ export default function CallsPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
 
-  // Fetch calls from Supabase
+  // Fetch calls from secure API
   const fetchCalls = useCallback(async (showRefresh = false) => {
     if (showRefresh) setRefreshing(true);
     setFetchError(null);
 
     try {
-      let query = supabase
-        .from("calls_overview")
-        .select("*")
-        .order("start_time_utc", { ascending: false })
-        .limit(50);
+      // Build query params for status filter
+      const params = new URLSearchParams();
+      params.set("limit", "50");
 
-      // Apply status filter
       if (filter === "flagged") {
-        query = query.eq("status", "flagged");
+        params.set("status", "flagged");
       } else if (filter === "safe") {
-        query = query.eq("status", "safe");
+        params.set("status", "safe");
       } else if (filter === "processing") {
-        query = query.in("status", ["pending", "downloaded", "processing"]);
+        // For "processing" filter, we need to handle multiple statuses
+        // The API doesn't support IN(), so we'll filter client-side for this case
+        // Or we could make multiple requests, but client-side is simpler
       }
 
-      const { data, error } = await query;
+      const res = await fetch(`/api/calls?${params}`);
 
-      if (error) {
-        console.error("Error fetching calls:", error);
-        setFetchError(`Database error: ${error.message}`);
-        setCalls([]);
-      } else {
-        console.log("Fetched calls:", data?.length, "Sample:", data?.[0]);
-        setCalls((data as Call[]) || []);
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || `HTTP ${res.status}`);
       }
+
+      const data = await res.json();
+      let callsList = (data.calls as Call[]) || [];
+
+      // Client-side filter for "processing" which includes multiple statuses
+      if (filter === "processing") {
+        callsList = callsList.filter((c) =>
+          ["pending", "downloaded", "processing"].includes(c.status)
+        );
+      }
+
+      setCalls(callsList);
     } catch (err) {
       console.error("Fetch exception:", err);
-      setFetchError(`Exception: ${err}`);
+      setFetchError(err instanceof Error ? err.message : "Failed to fetch calls");
+      setCalls([]);
     } finally {
       setLoading(false);
       setRefreshing(false);

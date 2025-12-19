@@ -122,7 +122,10 @@ export async function POST(req: NextRequest) {
     });
 
     console.log("AI Chat: Streaming response...");
-    return result.toTextStreamResponse();
+
+    // Use UI Message stream for proper tool calling support
+    // toTextStreamResponse() doesn't include text after tool execution
+    return result.toUIMessageStreamResponse();
   } catch (error) {
     console.error("AI Chat Error:", error);
     const message = error instanceof Error ? error.message : "Unknown error";

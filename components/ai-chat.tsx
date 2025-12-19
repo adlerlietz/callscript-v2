@@ -96,7 +96,10 @@ export function AIChat() {
             { id: assistantId, role: "assistant", content: "", toolResults: [] },
           ]);
 
-          // Plain text streaming - just append chunks directly
+          // Parse UI Message stream format (newline-delimited JSON with type prefixes)
+          // Format: "0:{...}" for text deltas, "1:{...}" for tool calls, etc.
+          let buffer = "";
+
           while (true) {
             const { done, value } = await reader.read();
             if (done) {
@@ -105,8 +108,41 @@ export function AIChat() {
             }
 
             const chunk = decoder.decode(value, { stream: true });
-            console.log("AI Chat: Chunk received:", chunk.length, "chars");
-            assistantContent += chunk;
+            buffer += chunk;
+
+            // Process complete lines
+            const lines = buffer.split("\n");
+            buffer = lines.pop() || ""; // Keep incomplete line in buffer
+
+            for (const line of lines) {
+              if (!line.trim()) continue;
+
+              try {
+                // Parse the stream message format: "type:jsonData"
+                const colonIdx = line.indexOf(":");
+                if (colonIdx === -1) continue;
+
+                const type = line.substring(0, colonIdx);
+                const jsonStr = line.substring(colonIdx + 1);
+                const data = JSON.parse(jsonStr);
+
+                // Handle different message types
+                // Type "g" = text delta, type "a" = tool call, type "b" = tool result
+                if (type === "g" && typeof data === "string") {
+                  // Text delta
+                  assistantContent += data;
+                } else if (data.type === "text-delta" && data.textDelta) {
+                  // Alternative format
+                  assistantContent += data.textDelta;
+                } else if (data.type === "tool-result") {
+                  // Tool result - could render charts
+                  toolResults.push(data.result);
+                }
+              } catch (e) {
+                // If not valid JSON, might be plain text fallback
+                console.log("AI Chat: Non-JSON line:", line.substring(0, 50));
+              }
+            }
 
             // Update message in real-time
             setMessages((prev) => {

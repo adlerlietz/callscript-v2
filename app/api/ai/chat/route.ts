@@ -92,10 +92,13 @@ export async function POST(req: NextRequest) {
       // Enable multi-step tool calling (AI SDK v5)
       stopWhen: stepCountIs(5),
       onError: (error) => {
-        console.error("AI Chat streamText error:", error);
+        console.error("AI Chat streamText error:", JSON.stringify(error, null, 2));
       },
       onStepFinish: (step) => {
-        console.log("AI Chat: Step finished, tools called:", step.toolCalls?.length || 0);
+        console.log("AI Chat: Step finished");
+        console.log("  - Text:", step.text?.substring(0, 100) || "(none)");
+        console.log("  - Tool calls:", step.toolCalls?.length || 0);
+        console.log("  - Tool results:", step.toolResults?.length || 0);
       },
     });
 

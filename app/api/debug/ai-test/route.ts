@@ -39,16 +39,16 @@ export async function GET(req: NextRequest) {
     results.supabase = { exception: String(e) };
   }
 
-  // Test 3: Test OpenRouter API
+  // Test 3: Test OpenAI API (direct)
   try {
-    const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
         "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "openai/gpt-4o",
+        model: "gpt-4o",
         messages: [{ role: "user", content: "Say 'test ok' and nothing else" }],
         max_tokens: 10,
       }),
@@ -56,15 +56,15 @@ export async function GET(req: NextRequest) {
 
     const data = await response.json();
     if (response.ok) {
-      results.openrouter = {
+      results.openai = {
         success: true,
         response: data.choices?.[0]?.message?.content
       };
     } else {
-      results.openrouter = { error: data };
+      results.openai = { error: data };
     }
   } catch (e) {
-    results.openrouter = { exception: String(e) };
+    results.openai = { exception: String(e) };
   }
 
   return new Response(JSON.stringify(results, null, 2), {

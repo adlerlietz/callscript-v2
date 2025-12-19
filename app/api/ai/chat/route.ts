@@ -14,9 +14,8 @@ import {
 } from "@/lib/ai/tools";
 import { buildSystemPrompt } from "@/lib/ai/prompts";
 
-// Initialize OpenRouter-compatible client
-const openrouter = createOpenAI({
-  baseURL: "https://openrouter.ai/api/v1",
+// Initialize OpenAI client (direct, not via OpenRouter)
+const openai = createOpenAI({
   apiKey: process.env.OPENAI_API_KEY!,
 });
 
@@ -58,7 +57,7 @@ export async function POST(req: NextRequest) {
     // Stream response with tool calling via OpenRouter
     // Use .chat() method for OpenRouter compatibility (not .responses())
     const result = streamText({
-      model: openrouter.chat("openai/gpt-4o"),
+      model: openai("gpt-4o"),
       system: systemPrompt,
       messages,
       tools: {

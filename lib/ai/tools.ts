@@ -93,7 +93,8 @@ export async function executeKpiSummary(
     console.log("executeKpiSummary: Starting with orgId:", orgId, "params:", params);
     const supabase = await createCoreClient();
 
-    const { data, error } = await supabase.rpc("get_kpi_summary", {
+    // Explicitly use core schema for RPC calls
+    const { data, error } = await supabase.schema("core").rpc("get_kpi_summary", {
       p_org_id: orgId,
       p_start_date: params.start_date,
       p_end_date: params.end_date,
@@ -137,7 +138,8 @@ export async function executeTrendData(
     console.log("executeTrendData: Starting with orgId:", orgId, "params:", params);
     const supabase = await createCoreClient();
 
-    const { data, error } = await supabase.rpc("get_trend_data", {
+    // Explicitly use core schema for RPC calls
+    const { data, error } = await supabase.schema("core").rpc("get_trend_data", {
       p_org_id: orgId,
       p_metric: params.metric,
       p_interval: params.interval,
@@ -189,7 +191,8 @@ export async function executeLeaderboard(
     console.log("executeLeaderboard: Starting with orgId:", orgId, "params:", params);
     const supabase = await createCoreClient();
 
-    const { data, error } = await supabase.rpc("get_leaderboard", {
+    // Explicitly use core schema for RPC calls
+    const { data, error } = await supabase.schema("core").rpc("get_leaderboard", {
       p_org_id: orgId,
       p_dimension: params.dimension,
       p_metric: params.metric,

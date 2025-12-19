@@ -27,7 +27,6 @@ export function AIChat() {
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [pendingTools, setPendingTools] = useState<string[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -56,7 +55,6 @@ export function AIChat() {
       setInput("");
       setIsLoading(true);
       setError(null);
-      setPendingTools([]);
 
       try {
         const response = await fetch("/api/ai/chat", {
@@ -97,24 +95,31 @@ export function AIChat() {
           ]);
 
           // Parse SSE (Server-Sent Events) stream format
-          // Format: "data: {json}\n\n"
+          // Format: "data: {json}\n" or "data: {json}\n\n"
           let buffer = "";
+          let textDeltaCount = 0;
+          let toolOutputCount = 0;
 
           while (true) {
             const { done, value } = await reader.read();
             if (done) {
-              console.log("AI Chat: Stream complete, total length:", assistantContent.length);
+              console.log("AI Chat: Stream complete", {
+                contentLength: assistantContent.length,
+                textDeltas: textDeltaCount,
+                toolOutputs: toolOutputCount,
+              });
               break;
             }
 
             const chunk = decoder.decode(value, { stream: true });
             buffer += chunk;
 
-            // Process complete SSE messages (each ends with \n\n or just \n)
-            const lines = buffer.split("\n");
-            buffer = lines.pop() || ""; // Keep incomplete line in buffer
+            // Process complete lines using while loop for robustness
+            let newlineIdx: number;
+            while ((newlineIdx = buffer.indexOf("\n")) !== -1) {
+              const line = buffer.slice(0, newlineIdx);
+              buffer = buffer.slice(newlineIdx + 1);
 
-            for (const line of lines) {
               // Skip empty lines
               if (!line.trim()) continue;
 
@@ -130,14 +135,17 @@ export function AIChat() {
                 // Handle text deltas
                 if (data.type === "text-delta" && data.delta) {
                   assistantContent += data.delta;
+                  textDeltaCount++;
                 }
                 // Handle tool output (for charts)
                 else if (data.type === "tool-output-available" && data.output) {
                   toolResults.push(data.output);
+                  toolOutputCount++;
+                  console.log("AI Chat: Tool output received", data.output?._meta?.tool);
                 }
               } catch (e) {
-                // Ignore parse errors for non-JSON lines
-                console.log("AI Chat: Parse error for:", dataStr.substring(0, 50));
+                // Log parse errors with full context
+                console.error("AI Chat: JSON parse error:", e, "Data:", dataStr.substring(0, 100));
               }
             }
 
@@ -156,9 +164,9 @@ export function AIChat() {
             });
           }
 
-          // If stream completed but no content, show error message
-          if (!assistantContent.trim()) {
-            console.error("AI Chat: Stream completed with no content");
+          // Only show error if BOTH content and toolResults are empty
+          if (!assistantContent.trim() && toolResults.length === 0) {
+            console.error("AI Chat: Stream completed with no content or tools");
             setMessages((prev) => {
               const updated = [...prev];
               const lastIdx = updated.length - 1;
@@ -176,7 +184,6 @@ export function AIChat() {
         setError(err instanceof Error ? err.message : "An error occurred");
       } finally {
         setIsLoading(false);
-        setPendingTools([]);
       }
     },
     [input, isLoading, messages]
@@ -277,20 +284,6 @@ export function AIChat() {
                     </div>
                   )}
 
-                  {/* Pending tool execution - loading skeleton */}
-                  {message.role === "assistant" && isLoading && pendingTools.length > 0 && (
-                    <div className="mt-4 rounded-lg border border-zinc-700 bg-zinc-900 p-4">
-                      <div className="flex items-center gap-2 text-zinc-400">
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                        <span className="text-sm">Analyzing data...</span>
-                      </div>
-                      <div className="mt-3 space-y-2">
-                        <div className="h-4 bg-zinc-800 rounded animate-pulse w-3/4" />
-                        <div className="h-4 bg-zinc-800 rounded animate-pulse w-1/2" />
-                        <div className="h-24 bg-zinc-800 rounded animate-pulse" />
-                      </div>
-                    </div>
-                  )}
 
                   {/* Tool results - render charts */}
                   {message.role === "assistant" &&

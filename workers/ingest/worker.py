@@ -65,18 +65,32 @@ REQUEST_TIMEOUT = 30  # API request timeout
 DEFAULT_ORG_ID = "00000000-0000-0000-0000-000000000001"
 
 # Ringba API columns to fetch
+# NOTE: All fields listed here are returned by Ringba API and mapped in map_ringba_to_call()
+# IMPORTANT: Only include columns that exist in the Ringba account - unknown columns cause 422 errors
 RINGBA_COLUMNS = [
+    # Core identifiers
+    {"column": "inboundCallId"},
     {"column": "callDt"},
-    {"column": "inboundPhoneNumber"},
-    {"column": "buyer"},
     {"column": "callLengthInSeconds"},
+    {"column": "inboundPhoneNumber"},
+    {"column": "recordingUrl"},
+    # Campaign
     {"column": "campaignId"},
     {"column": "campaignName"},
+    # Publisher attribution (critical for analytics)
     {"column": "publisherId"},
-    {"column": "conversionAmount"},
-    {"column": "payoutAmount"},
-    {"column": "recordingUrl"},
-    {"column": "inboundCallId"},
+    {"column": "publisherSubId"},
+    {"column": "publisherName"},
+    # Buyer/Target routing
+    {"column": "buyer"},
+    {"column": "targetId"},
+    {"column": "targetName"},
+    # Financial
+    {"column": "conversionAmount"},  # Maps to revenue
+    {"column": "payoutAmount"},      # Maps to payout
+    # NOTE: Operational metrics columns (endCallSource, callStatus, etc.) are NOT available
+    # in this Ringba account. The database columns exist but remain NULL.
+    # To populate them, use the raw_payload JSONB field in backfill operations.
 ]
 
 # =============================================================================
@@ -158,13 +172,13 @@ class IngestRepository:
         """
         self.client = client
         self.schema = client.schema("core")
-        self._campaign_cache: dict[str, str] = {}  # ringba_campaign_id -> uuid
+        self._campaign_cache: dict[str, dict[str, Any]] = {}  # ringba_campaign_id -> {id, vertical}
 
     def ensure_campaign(
         self, ringba_campaign_id: str, campaign_name: str, org_id: str
-    ) -> Optional[str]:
+    ) -> Optional[dict[str, Any]]:
         """
-        Ensure campaign exists and return its UUID.
+        Ensure campaign exists and return campaign info.
 
         Uses cache to minimize database queries.
 
@@ -174,7 +188,7 @@ class IngestRepository:
             org_id: Organization UUID
 
         Returns:
-            Campaign UUID or None if creation failed
+            Dict with 'id' and 'vertical' or None if creation failed
         """
         if not ringba_campaign_id:
             return None
@@ -184,10 +198,10 @@ class IngestRepository:
             return self._campaign_cache[ringba_campaign_id]
 
         try:
-            # Try to find existing
+            # Try to find existing (include vertical for denormalization)
             response = (
                 self.schema.from_("campaigns")
-                .select("id")
+                .select("id, vertical")
                 .eq("ringba_campaign_id", ringba_campaign_id)
                 .eq("org_id", org_id)
                 .maybe_single()
@@ -195,10 +209,11 @@ class IngestRepository:
             )
 
             if response.data:
-                self._campaign_cache[ringba_campaign_id] = response.data["id"]
-                return response.data["id"]
+                campaign_info = {"id": response.data["id"], "vertical": response.data.get("vertical")}
+                self._campaign_cache[ringba_campaign_id] = campaign_info
+                return campaign_info
 
-            # Create new campaign
+            # Create new campaign (vertical is set by trigger infer_campaign_vertical)
             response = (
                 self.schema.from_("campaigns")
                 .insert(
@@ -208,15 +223,15 @@ class IngestRepository:
                         "org_id": org_id,
                     }
                 )
-                .select("id")
+                .select("id, vertical")
                 .single()
                 .execute()
             )
 
-            campaign_id = response.data["id"]
-            self._campaign_cache[ringba_campaign_id] = campaign_id
+            campaign_info = {"id": response.data["id"], "vertical": response.data.get("vertical")}
+            self._campaign_cache[ringba_campaign_id] = campaign_info
             logger.info(f"Created campaign: {campaign_name} ({ringba_campaign_id[:8]}...)")
-            return campaign_id
+            return campaign_info
 
         except Exception as e:
             # May fail due to race condition - try to fetch again
@@ -224,29 +239,35 @@ class IngestRepository:
             try:
                 response = (
                     self.schema.from_("campaigns")
-                    .select("id")
+                    .select("id, vertical")
                     .eq("ringba_campaign_id", ringba_campaign_id)
                     .eq("org_id", org_id)
                     .single()
                     .execute()
                 )
                 if response.data:
-                    self._campaign_cache[ringba_campaign_id] = response.data["id"]
-                    return response.data["id"]
+                    campaign_info = {"id": response.data["id"], "vertical": response.data.get("vertical")}
+                    self._campaign_cache[ringba_campaign_id] = campaign_info
+                    return campaign_info
             except Exception:
                 pass
             return None
 
-    def upsert_calls(self, calls: list[dict[str, Any]]) -> tuple[int, int]:
+    def upsert_calls(
+        self, calls: list[dict[str, Any]], force_update: bool = False
+    ) -> tuple[int, int]:
         """
         Upsert calls to database with smart conflict handling.
 
         On conflict (ringba_call_id exists):
         - DO NOT update status (preserves pipeline progress)
-        - Only update mutable fields: audio_url, duration_seconds, revenue
+        - Normal mode: Only update mutable fields: audio_url, duration_seconds, revenue
+        - Force update mode: Update all analytics fields (for backfill)
 
         Args:
             calls: List of call records to upsert
+            force_update: If True, update all analytics columns on existing records
+                          (used for backfilling new columns to historical data)
 
         Returns:
             Tuple of (total_processed, new_inserted)
@@ -285,17 +306,56 @@ class IngestRepository:
             except Exception as e:
                 logger.error(f"Failed to insert new calls: {e}")
 
-        # Update existing calls (only mutable fields, NOT status)
+        # Update existing calls
         for call in existing_calls:
             try:
-                update_data = {
-                    "audio_url": call.get("audio_url"),
-                    "duration_seconds": call.get("duration_seconds"),
-                    "revenue": call.get("revenue"),
-                    "updated_at": datetime.now(timezone.utc).isoformat(),
-                }
-                # Remove None values
-                update_data = {k: v for k, v in update_data.items() if v is not None}
+                if force_update:
+                    # FORCE UPDATE MODE: Update all analytics columns
+                    # CRITICAL: Do NOT update pipeline fields (status, transcript, qa_flags, storage_path)
+                    update_data = {
+                        # Core metadata (safe to update)
+                        "audio_url": call.get("audio_url"),
+                        "duration_seconds": call.get("duration_seconds"),
+                        # Financial
+                        "revenue": call.get("revenue"),
+                        "payout": call.get("payout"),
+                        # Publisher attribution
+                        "publisher_id": call.get("publisher_id"),
+                        "publisher_sub_id": call.get("publisher_sub_id"),
+                        "publisher_name": call.get("publisher_name"),
+                        # Buyer/Target routing
+                        "buyer_name": call.get("buyer_name"),
+                        "target_id": call.get("target_id"),
+                        "target_name": call.get("target_name"),
+                        # Geographic
+                        "caller_state": call.get("caller_state"),
+                        "caller_city": call.get("caller_city"),
+                        # Operational metrics (Phase 3)
+                        "end_call_source": call.get("end_call_source"),
+                        "call_status": call.get("call_status"),
+                        "connected_duration": call.get("connected_duration"),
+                        "time_to_answer": call.get("time_to_answer"),
+                        "is_converted": call.get("is_converted"),
+                        "target_response_status": call.get("target_response_status"),
+                        # Raw payload
+                        "raw_payload": call.get("raw_payload"),
+                        # Timestamp
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                    # Note: We intentionally include None values for force_update
+                    # to overwrite any stale data. Only raw_payload None is skipped.
+                    if update_data.get("raw_payload") is None:
+                        del update_data["raw_payload"]
+                else:
+                    # NORMAL MODE: Only update basic mutable fields
+                    update_data = {
+                        "audio_url": call.get("audio_url"),
+                        "duration_seconds": call.get("duration_seconds"),
+                        "revenue": call.get("revenue"),
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                    # Remove None values in normal mode
+                    update_data = {k: v for k, v in update_data.items() if v is not None}
 
                 if update_data:
                     self.schema.from_("calls").update(update_data).eq(
@@ -304,6 +364,9 @@ class IngestRepository:
                     updated += 1
             except Exception as e:
                 logger.warning(f"Failed to update call {call['ringba_call_id'][:8]}...: {e}")
+
+        if force_update and updated > 0:
+            logger.info(f"Force-updated {updated} existing calls with new analytics columns")
 
         return len(calls), inserted
 
@@ -318,6 +381,7 @@ class IngestRepository:
             "flagged",
             "safe",
             "failed",
+            "skipped",
         ]:
             try:
                 response = (
@@ -412,21 +476,81 @@ def fetch_ringba_calls(
     return all_records
 
 
+def parse_bool(value: Any) -> Optional[bool]:
+    """
+    Parse various boolean representations to Python bool.
+
+    Handles: True/False, "true"/"false", 1/0, "1"/"0", "yes"/"no"
+
+    Args:
+        value: Value to parse
+
+    Returns:
+        Boolean or None if unparseable
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        return value.lower() in ("true", "1", "yes")
+    return None
+
+
+def determine_call_status(duration_seconds: Optional[int], audio_url: Optional[str]) -> tuple[str, Optional[str]]:
+    """
+    Determine initial status and skip_reason for a call based on duration and audio availability.
+
+    Auto-skip logic:
+    - duration = 0: skip (zero_duration) - no audio to process
+    - duration < 5s: skip (too_short) - not enough audio to transcribe meaningfully
+    - duration >= 5s with audio_url: pending - ready for pipeline
+    - duration >= 5s without audio_url: pending - will wait for audio (or skip later)
+
+    Args:
+        duration_seconds: Call duration in seconds (may be None)
+        audio_url: Recording URL from Ringba (may be None)
+
+    Returns:
+        Tuple of (status, skip_reason) where skip_reason is None for pending calls
+    """
+    # No duration data yet - stay pending, will be evaluated later
+    if duration_seconds is None:
+        return "pending", None
+
+    # Zero duration - definitely no audio
+    if duration_seconds == 0:
+        return "skipped", "zero_duration"
+
+    # Very short calls - not useful for transcription
+    if duration_seconds < 5:
+        return "skipped", "too_short"
+
+    # Normal call - ready for processing
+    return "pending", None
+
+
 def map_ringba_to_call(
     record: dict[str, Any],
     org_id: str,
-    campaign_id: Optional[str],
+    campaign_info: Optional[dict[str, Any]],
 ) -> dict[str, Any]:
     """
     Map Ringba record to database call format.
 
+    Maps all Ringba fields to corresponding database columns.
+    Stores the complete raw record for forensics and future field extraction.
+    Auto-skips calls that are too short to transcribe.
+
     Args:
-        record: Ringba call record
+        record: Ringba call record (full API response for this call)
         org_id: Organization UUID
-        campaign_id: Campaign UUID (may be None)
+        campaign_info: Dict with 'id' and 'vertical' from campaigns table (may be None)
 
     Returns:
-        Dict ready for database insert
+        Dict ready for database insert with all analytics columns populated
     """
     # Parse call datetime
     call_dt = record.get("callDt")
@@ -441,17 +565,102 @@ def map_ringba_to_call(
     else:
         start_time = datetime.now(timezone.utc)
 
-    return {
+    # Parse connected duration (try multiple field names, default to 0 if null)
+    connected_duration = (
+        record.get("connectedCallLengthInSeconds")
+        or record.get("connectedDuration")
+        or record.get("talkTime")
+        or 0
+    )
+
+    # Parse time to answer (try multiple field names)
+    time_to_answer = (
+        record.get("timeToAnswer")
+        or record.get("timeToConnect")
+        or record.get("ringDuration")
+    )
+
+    # Parse end call source (try multiple field names)
+    end_call_source = (
+        record.get("endCallSource")
+        or record.get("hangupSource")
+        or record.get("disconnectSource")
+    )
+
+    # Parse call status (try multiple field names)
+    call_status = (
+        record.get("callStatus")
+        or record.get("callResult")
+        or record.get("disposition")
+    )
+
+    # Parse target response (try multiple field names)
+    target_response = (
+        record.get("targetResponseStatus")
+        or record.get("targetBuyerCallStatus")
+        or record.get("targetStatus")
+    )
+
+    # Parse conversion flag (try multiple field names)
+    is_converted = parse_bool(
+        record.get("isConverted")
+        or record.get("converted")
+        or record.get("conversion")
+    )
+
+    # Determine status based on duration (auto-skip short calls)
+    duration_seconds = record.get("callLengthInSeconds")
+    audio_url = record.get("recordingUrl")
+    status, skip_reason = determine_call_status(duration_seconds, audio_url)
+
+    # Extract campaign info for denormalization
+    campaign_id = campaign_info.get("id") if campaign_info else None
+    campaign_vertical = campaign_info.get("vertical") if campaign_info else None
+    campaign_name = record.get("campaignName")  # From Ringba record
+
+    result = {
+        # Core identifiers
         "ringba_call_id": record.get("inboundCallId"),
         "org_id": org_id,
         "campaign_id": campaign_id,
+        "campaign_name": campaign_name,  # Denormalized for AI analytics
+        "vertical": campaign_vertical,    # Denormalized for AI analytics
         "start_time_utc": start_time.isoformat(),
+        "status": status,
+        # Call metadata
         "caller_number": record.get("inboundPhoneNumber"),
         "duration_seconds": record.get("callLengthInSeconds"),
-        "revenue": record.get("conversionAmount", 0) or 0,
         "audio_url": record.get("recordingUrl"),
-        "status": "pending",
+        # Financial
+        "revenue": record.get("conversionAmount", 0) or 0,
+        "payout": record.get("payoutAmount", 0) or 0,
+        # Publisher attribution
+        "publisher_id": record.get("publisherId"),
+        "publisher_sub_id": record.get("publisherSubId"),
+        "publisher_name": record.get("publisherName"),
+        # Buyer/Target routing
+        "buyer_name": record.get("buyer"),
+        "target_id": record.get("targetId"),
+        "target_name": record.get("targetName"),
+        # Geographic (try multiple field names)
+        "caller_state": record.get("state") or record.get("callerState"),
+        "caller_city": record.get("city") or record.get("callerCity"),
+        # Operational metrics (Phase 3 - AI Root Cause Analysis)
+        "end_call_source": end_call_source,
+        "call_status": call_status,
+        "connected_duration": connected_duration,
+        "time_to_answer": time_to_answer,
+        "is_converted": is_converted,
+        "target_response_status": target_response,
+        # Raw payload for forensics
+        "raw_payload": record,
     }
+
+    # Add skip_reason if call was auto-skipped
+    if skip_reason:
+        result["skip_reason"] = skip_reason
+
+    return result
 
 
 # =============================================================================
@@ -499,18 +708,18 @@ def run_sync_cycle(
         if not ringba_call_id:
             continue
 
-        # Ensure campaign exists
-        campaign_id = None
+        # Ensure campaign exists (returns {id, vertical} dict)
+        campaign_info = None
         ringba_campaign_id = record.get("campaignId")
         if ringba_campaign_id:
-            campaign_id = repo.ensure_campaign(
+            campaign_info = repo.ensure_campaign(
                 ringba_campaign_id,
                 record.get("campaignName", "Unknown"),
                 org_id,
             )
 
-        # Map to database format
-        call = map_ringba_to_call(record, org_id, campaign_id)
+        # Map to database format (includes campaign_name and vertical)
+        call = map_ringba_to_call(record, org_id, campaign_info)
         calls.append(call)
 
     # Upsert to database (preserves status on conflict)
@@ -533,6 +742,7 @@ def run_backfill(
     org_id: str = DEFAULT_ORG_ID,
     chunk_hours: int = 24,
     lifo: bool = True,
+    force_update: bool = False,
 ) -> tuple[int, int]:
     """
     Run backfill for a date range, chunked into smaller windows.
@@ -549,6 +759,7 @@ def run_backfill(
         org_id: Organization ID to associate calls with
         chunk_hours: Size of each chunk in hours (default 24)
         lifo: Process newest chunks first (default True)
+        force_update: If True, update analytics columns on existing records
 
     Returns:
         Tuple of (total_fetched, total_inserted)
@@ -574,6 +785,8 @@ def run_backfill(
     logger.info(f"Backfill: {start_time.strftime('%Y-%m-%d %H:%M')} -> {end_time.strftime('%Y-%m-%d %H:%M')} UTC")
     logger.info(f"Chunk size: {chunk_hours} hours, Total chunks: {total_chunks}")
     logger.info(f"Order: {'LIFO (newest first)' if lifo else 'FIFO (oldest first)'}")
+    if force_update:
+        logger.info("⚡ FORCE UPDATE MODE: Will update analytics columns on existing records")
 
     for chunk_num, (chunk_start, chunk_end) in enumerate(chunks, 1):
         logger.info(f"[Chunk {chunk_num}/{total_chunks}] {chunk_start.strftime('%Y-%m-%d %H:%M')} -> {chunk_end.strftime('%Y-%m-%d %H:%M')}")
@@ -592,24 +805,29 @@ def run_backfill(
                     if not ringba_call_id:
                         continue
 
-                    campaign_id = None
+                    # Ensure campaign exists (returns {id, vertical} dict)
+                    campaign_info = None
                     ringba_campaign_id = record.get("campaignId")
                     if ringba_campaign_id:
-                        campaign_id = repo.ensure_campaign(
+                        campaign_info = repo.ensure_campaign(
                             ringba_campaign_id,
                             record.get("campaignName", "Unknown"),
                             org_id,
                         )
 
-                    call = map_ringba_to_call(record, org_id, campaign_id)
+                    call = map_ringba_to_call(record, org_id, campaign_info)
                     calls.append(call)
 
-                # Upsert to database
-                total, inserted = repo.upsert_calls(calls)
+                # Upsert to database (with force_update for backfill if enabled)
+                total, inserted = repo.upsert_calls(calls, force_update=force_update)
                 total_fetched += len(records)
                 total_inserted += inserted
 
-                logger.info(f"  Processed: {inserted} new, {total - inserted} existing")
+                updated_count = total - inserted
+                if force_update:
+                    logger.info(f"  Processed: {inserted} new, {updated_count} force-updated")
+                else:
+                    logger.info(f"  Processed: {inserted} new, {updated_count} existing")
             else:
                 logger.info("  No records in this chunk")
 
@@ -677,6 +895,11 @@ def parse_args():
         "--org-id",
         type=str,
         help="Specific org ID to backfill (for multi-org mode)",
+    )
+    parser.add_argument(
+        "--force-update",
+        action="store_true",
+        help="Force update analytics columns on existing records (for backfilling new columns)",
     )
     return parser.parse_args()
 
@@ -793,11 +1016,15 @@ def main():
                     org_id=org["org_id"],
                     chunk_hours=args.chunk_hours,
                     lifo=use_lifo,
+                    force_update=args.force_update,
                 )
 
                 grand_total_fetched += fetched
                 grand_total_inserted += inserted
-                logger.info(f"  [{org_name}] Backfill complete: {fetched} fetched, {inserted} new")
+                if args.force_update:
+                    logger.info(f"  [{org_name}] Backfill complete: {fetched} fetched, {inserted} new, rest force-updated")
+                else:
+                    logger.info(f"  [{org_name}] Backfill complete: {fetched} fetched, {inserted} new")
 
             # Summary
             logger.info("=" * 60)
@@ -942,11 +1169,15 @@ def main():
             org_id=DEFAULT_ORG_ID,
             chunk_hours=args.chunk_hours,
             lifo=use_lifo,
+            force_update=args.force_update,
         )
 
         # Summary
         logger.info("=" * 60)
-        logger.info("BACKFILL COMPLETE")
+        if args.force_update:
+            logger.info("BACKFILL COMPLETE (FORCE UPDATE MODE)")
+        else:
+            logger.info("BACKFILL COMPLETE")
         logger.info(f"Total fetched: {total_fetched}")
         logger.info(f"Total inserted: {total_inserted}")
         stats = repo.get_queue_stats()

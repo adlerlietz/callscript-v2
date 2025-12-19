@@ -195,6 +195,13 @@ export async function executeLeaderboard(
     }
 
     console.log("executeLeaderboard: Success, entries:", data?.length || 0);
+
+    // Add accuracy disclosure for state-based queries
+    const dataNote =
+      params.dimension === "state"
+        ? "State data is inferred from phone area codes (~95% accurate for landlines, ~80% for mobile phones where owners may have moved states)."
+        : undefined;
+
     return {
       success: true,
       chart_type: "bar" as const,
@@ -204,6 +211,7 @@ export async function executeLeaderboard(
       entries: data?.length || 0,
       max_entries: 25,
       truncated: (data?.length || 0) >= 25,
+      data_note: dataNote,
       _meta: {
         query: params,
         tool: "get_leaderboard",

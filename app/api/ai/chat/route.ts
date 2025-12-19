@@ -15,10 +15,9 @@ import {
 import { buildSystemPrompt } from "@/lib/ai/prompts";
 
 // Initialize OpenRouter-compatible client
-// Note: Using hardcoded key temporarily - env var not loading correctly
 const openrouter = createOpenAI({
   baseURL: "https://openrouter.ai/api/v1",
-  apiKey: "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",
+  apiKey: process.env.OPENAI_API_KEY!,
 });
 
 export const runtime = "nodejs";

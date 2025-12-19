@@ -122,6 +122,22 @@ export function AIChat() {
               return updated;
             });
           }
+
+          // If stream completed but no content, show error message
+          if (!assistantContent.trim()) {
+            console.error("AI Chat: Stream completed with no content");
+            setMessages((prev) => {
+              const updated = [...prev];
+              const lastIdx = updated.length - 1;
+              if (updated[lastIdx]?.role === "assistant") {
+                updated[lastIdx] = {
+                  ...updated[lastIdx],
+                  content: "I encountered an issue processing your request. Please try again or rephrase your question.",
+                };
+              }
+              return updated;
+            });
+          }
         }
       } catch (err) {
         setError(err instanceof Error ? err.message : "An error occurred");

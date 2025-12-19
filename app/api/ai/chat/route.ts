@@ -68,7 +68,14 @@ export async function POST(req: NextRequest) {
           inputSchema: kpiSummarySchema,
           execute: async (params: z.infer<typeof kpiSummarySchema>) => {
             console.log("AI Chat: Executing get_kpi_summary with params:", params);
-            return executeKpiSummary(orgId, params);
+            try {
+              const result = await executeKpiSummary(orgId, params);
+              console.log("AI Chat: get_kpi_summary result:", JSON.stringify(result).substring(0, 200));
+              return result;
+            } catch (e) {
+              console.error("AI Chat: get_kpi_summary error:", e);
+              return { error: true, message: String(e) };
+            }
           },
         },
         get_trend_data: {
@@ -76,7 +83,14 @@ export async function POST(req: NextRequest) {
           inputSchema: trendDataSchema,
           execute: async (params: z.infer<typeof trendDataSchema>) => {
             console.log("AI Chat: Executing get_trend_data with params:", params);
-            return executeTrendData(orgId, params);
+            try {
+              const result = await executeTrendData(orgId, params);
+              console.log("AI Chat: get_trend_data result:", JSON.stringify(result).substring(0, 200));
+              return result;
+            } catch (e) {
+              console.error("AI Chat: get_trend_data error:", e);
+              return { error: true, message: String(e) };
+            }
           },
         },
         get_leaderboard: {
@@ -84,7 +98,14 @@ export async function POST(req: NextRequest) {
           inputSchema: leaderboardSchema,
           execute: async (params: z.infer<typeof leaderboardSchema>) => {
             console.log("AI Chat: Executing get_leaderboard with params:", params);
-            return executeLeaderboard(orgId, params);
+            try {
+              const result = await executeLeaderboard(orgId, params);
+              console.log("AI Chat: get_leaderboard result:", JSON.stringify(result).substring(0, 200));
+              return result;
+            } catch (e) {
+              console.error("AI Chat: get_leaderboard error:", e);
+              return { error: true, message: String(e) };
+            }
           },
         },
       },

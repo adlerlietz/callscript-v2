@@ -10,10 +10,15 @@ import { createClient } from "@supabase/supabase-js";
 
 // Create a simple Supabase client for AI tools (service role, no cookies)
 function getAIClient() {
-  return createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!
-  );
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+  if (!url || !key) {
+    console.error("AI Tools: Missing env vars", { url: !!url, key: !!key });
+    throw new Error("Missing Supabase configuration");
+  }
+
+  return createClient(url, key);
 }
 
 // Response types for type safety

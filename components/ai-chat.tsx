@@ -96,8 +96,8 @@ export function AIChat() {
             { id: assistantId, role: "assistant", content: "", toolResults: [] },
           ]);
 
-          // Parse UI Message stream format (newline-delimited JSON with type prefixes)
-          // Format: "0:{...}" for text deltas, "1:{...}" for tool calls, etc.
+          // Parse SSE (Server-Sent Events) stream format
+          // Format: "data: {json}\n\n"
           let buffer = "";
 
           while (true) {
@@ -110,37 +110,34 @@ export function AIChat() {
             const chunk = decoder.decode(value, { stream: true });
             buffer += chunk;
 
-            // Process complete lines
+            // Process complete SSE messages (each ends with \n\n or just \n)
             const lines = buffer.split("\n");
             buffer = lines.pop() || ""; // Keep incomplete line in buffer
 
             for (const line of lines) {
+              // Skip empty lines
               if (!line.trim()) continue;
 
+              // SSE format: "data: {json}" or "data: [DONE]"
+              if (!line.startsWith("data: ")) continue;
+
+              const dataStr = line.slice(6); // Remove "data: " prefix
+              if (dataStr === "[DONE]") continue;
+
               try {
-                // Parse the stream message format: "type:jsonData"
-                const colonIdx = line.indexOf(":");
-                if (colonIdx === -1) continue;
+                const data = JSON.parse(dataStr);
 
-                const type = line.substring(0, colonIdx);
-                const jsonStr = line.substring(colonIdx + 1);
-                const data = JSON.parse(jsonStr);
-
-                // Handle different message types
-                // Type "g" = text delta, type "a" = tool call, type "b" = tool result
-                if (type === "g" && typeof data === "string") {
-                  // Text delta
-                  assistantContent += data;
-                } else if (data.type === "text-delta" && data.textDelta) {
-                  // Alternative format
-                  assistantContent += data.textDelta;
-                } else if (data.type === "tool-result") {
-                  // Tool result - could render charts
-                  toolResults.push(data.result);
+                // Handle text deltas
+                if (data.type === "text-delta" && data.delta) {
+                  assistantContent += data.delta;
+                }
+                // Handle tool output (for charts)
+                else if (data.type === "tool-output-available" && data.output) {
+                  toolResults.push(data.output);
                 }
               } catch (e) {
-                // If not valid JSON, might be plain text fallback
-                console.log("AI Chat: Non-JSON line:", line.substring(0, 50));
+                // Ignore parse errors for non-JSON lines
+                console.log("AI Chat: Parse error for:", dataStr.substring(0, 50));
               }
             }
 

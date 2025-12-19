@@ -104,23 +104,62 @@ async function fetchAudioWithRetry(
 }
 
 /**
- * Process a single call: Download audio → Upload to Storage → Update DB
+ * Process a single call: Lock → Download audio → Upload to Storage → Update DB
+ *
+ * Atomic locking ensures only one worker processes each call:
+ * - Lock acquired via UPDATE with WHERE status='pending' AND storage_path IS NULL
+ * - .select("id") returns affected rows; empty array = lock failed
+ * - On success: storage_path set to final path
+ * - On failure: storage_path reset to NULL (releases lock)
  */
 async function processCall(call: CallRecord): Promise<void> {
   const storagePath = getStoragePath(call.id, call.start_time_utc);
+  const lockValue = `vault_lock:${call.id.slice(0, 8)}`;
+
+  // ==========================================================================
+  // STEP 0: Atomic lock - claim this call
+  // ==========================================================================
+  // Uses .select("id") to get affected rows. In Supabase JS v2:
+  // - If UPDATE matches rows: returns { data: [{id: "..."}], error: null }
+  // - If UPDATE matches no rows: returns { data: [], error: null }
+  // This is atomic: only one concurrent worker can succeed.
+  const { data: lockData, error: lockError } = await supabase
+    .from("calls")
+    .update({
+      storage_path: lockValue,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", call.id)
+    .eq("status", "pending")
+    .is("storage_path", null)
+    .select("id");
+
+  if (lockError) {
+    console.error(`❌ Lock error for ${call.ringba_call_id}:`, lockError.message);
+    return;
+  }
+
+  // Lock failed - another worker claimed this call
+  if (!lockData || lockData.length === 0) {
+    console.log(`⏭️ Skipping ${call.ringba_call_id} - claimed by another worker`);
+    return;
+  }
+
+  console.log(`🔒 Locked ${call.ringba_call_id}`);
 
   try {
-    console.log(`📦 Processing call ${call.ringba_call_id}`);
-
-    // Fetch audio from Ringba with retry logic
+    // ==========================================================================
+    // STEP 1: Fetch audio from Ringba
+    // ==========================================================================
     const audioResp = await fetchAudioWithRetry(call.audio_url, call.ringba_call_id);
 
-    // Handle permanent 404/403/410 - mark as failed, don't retry
+    // Handle permanent 404/403/410 - release lock and mark as failed
     if (audioResp === null) {
       console.warn(`⚠️ Audio not available for ${call.ringba_call_id}, marking as failed`);
       await supabase
         .from("calls")
         .update({
+          storage_path: null, // Release lock
           status: "failed",
           processing_error: "Audio file not available (404/403/410)",
           updated_at: new Date().toISOString(),
@@ -136,6 +175,7 @@ async function processCall(call: CallRecord): Promise<void> {
       await supabase
         .from("calls")
         .update({
+          storage_path: null, // Release lock
           status: "failed",
           processing_error: "Empty audio file (Content-Length: 0)",
           updated_at: new Date().toISOString(),
@@ -144,7 +184,9 @@ async function processCall(call: CallRecord): Promise<void> {
       return;
     }
 
-    // Stream to Supabase Storage
+    // ==========================================================================
+    // STEP 2: Upload to Supabase Storage
+    // ==========================================================================
     const audioBlob = await audioResp.blob();
     const { error: uploadError } = await supabase.storage
       .from(STORAGE_BUCKET)
@@ -157,14 +199,16 @@ async function processCall(call: CallRecord): Promise<void> {
       throw new Error(`Storage upload failed: ${uploadError.message}`);
     }
 
+    // ==========================================================================
+    // STEP 3: Update DB with success status
+    // ==========================================================================
     // COST OPTIMIZATION: Skip AI for very short calls (< 5 seconds)
-    // These are dial tones, wrong numbers, immediate hang-ups
     if (call.duration_seconds !== null && call.duration_seconds < 5) {
       console.log(`⏭️ Skipping AI for very short call ${call.ringba_call_id} (${call.duration_seconds}s)`);
       await supabase
         .from("calls")
         .update({
-          storage_path: storagePath,
+          storage_path: storagePath, // Overwrites lock value with real path
           status: "safe",
           processing_error: "Auto-marked safe: duration < 5s",
           updated_at: new Date().toISOString(),
@@ -177,23 +221,26 @@ async function processCall(call: CallRecord): Promise<void> {
     await supabase
       .from("calls")
       .update({
-        storage_path: storagePath,
+        storage_path: storagePath, // Overwrites lock value with real path
         status: "downloaded",
         updated_at: new Date().toISOString(),
       })
       .eq("id", call.id);
 
     console.log(`✅ Stored ${call.ringba_call_id} at ${storagePath}`);
+
   } catch (err) {
+    // ==========================================================================
+    // TRANSIENT ERROR: Release lock, keep status='pending' for retry
+    // ==========================================================================
     const errorMsg = err instanceof Error ? err.message : String(err);
     console.error(`❌ Failed to process call ${call.ringba_call_id}:`, errorMsg);
 
-    // Update DB with error
     await supabase
       .from("calls")
       .update({
+        storage_path: null, // Release lock - call remains pending for retry
         processing_error: `Vault error: ${errorMsg}`,
-        retry_count: supabase.rpc("increment", { row_id: call.id }), // Increment retry
         updated_at: new Date().toISOString(),
       })
       .eq("id", call.id);

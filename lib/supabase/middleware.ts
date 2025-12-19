@@ -44,7 +44,7 @@ export async function updateSession(request: NextRequest) {
   const isSignupPage = request.nextUrl.pathname === "/signup";
   const isOnboardPage = request.nextUrl.pathname === "/onboard";
   const isNoAccessPage = request.nextUrl.pathname === "/no-access";
-  const isPublicRoute = request.nextUrl.pathname.startsWith("/api/public");
+  const isPublicRoute = request.nextUrl.pathname.startsWith("/api/public") || request.nextUrl.pathname.startsWith("/api/debug");
   const isAuthCallback = request.nextUrl.pathname === "/auth/callback";
   // Note: /api/health now requires auth, so it's not in the public list
   const isOnboardApi = request.nextUrl.pathname === "/api/onboard";

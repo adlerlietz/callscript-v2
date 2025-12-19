@@ -14,7 +14,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
-import { cn } from "@/lib/utils";
+import { cn, formatSourceName } from "@/lib/utils";
 
 // Correct TypeScript types matching database columns
 type Call = {
@@ -36,6 +36,17 @@ type Call = {
   qa_flags: QaFlags | null;
   qa_version: string | null;
   judge_model: string | null;
+  // Analytics columns (Phase 1)
+  publisher_id: string | null;
+  publisher_sub_id: string | null;
+  publisher_name: string | null;
+  buyer_name: string | null;
+  target_id: string | null;
+  target_name: string | null;
+  payout: number | null;
+  caller_state: string | null;
+  caller_city: string | null;
+  profit: number | null;
 };
 
 type QaFlags = {
@@ -526,7 +537,8 @@ export default function CallsPage() {
       call.transcript_text?.toLowerCase().includes(query) ||
       call.caller_number?.toLowerCase().includes(query) ||
       call.ringba_call_id?.toLowerCase().includes(query) ||
-      call.id.toLowerCase().includes(query)
+      call.id.toLowerCase().includes(query) ||
+      call.publisher_id?.toLowerCase().includes(query)
     );
   });
 
@@ -598,7 +610,7 @@ export default function CallsPage() {
                 Status
               </th>
               <th className="px-4 py-3 text-left text-xs font-medium text-zinc-400 uppercase tracking-wider">
-                ID
+                Source
               </th>
               <th className="px-4 py-3 text-left text-xs font-medium text-zinc-400 uppercase tracking-wider">
                 Date
@@ -639,8 +651,10 @@ export default function CallsPage() {
                   <td className="px-4 py-4">
                     <StatusBadge status={call.status} />
                   </td>
-                  <td className="px-4 py-4 font-mono text-sm text-zinc-400">
-                    {truncateId(call.id)}
+                  <td className="px-4 py-4">
+                    <span className="text-sm font-medium text-white">
+                      {formatSourceName(call.publisher_id, call.buyer_name, call.publisher_name) || "—"}
+                    </span>
                   </td>
                   <td className="px-4 py-4 text-sm text-zinc-300">
                     {formatDate(call.start_time_utc)}

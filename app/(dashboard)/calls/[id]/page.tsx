@@ -165,7 +165,52 @@ export default function CallDetailPage({ params }: { params: Promise<{ id: strin
     }
   };
 
-  // Render transcript
+  // Format timestamp as MM:SS
+  const formatTimestamp = (seconds: number) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    return `${mins}:${secs.toString().padStart(2, "0")}`;
+  };
+
+  // Get speaker color
+  const getSpeakerColor = (speaker: string) => {
+    const colors: Record<string, string> = {
+      "SPEAKER_00": "text-blue-400 border-blue-400/30",
+      "SPEAKER_01": "text-emerald-400 border-emerald-400/30",
+      "SPEAKER_02": "text-amber-400 border-amber-400/30",
+      "SPEAKER_03": "text-purple-400 border-purple-400/30",
+    };
+    return colors[speaker] || "text-zinc-400 border-zinc-400/30";
+  };
+
+  // Get speaker label
+  const getSpeakerLabel = (speaker: string) => {
+    const labels: Record<string, string> = {
+      "SPEAKER_00": "Agent",
+      "SPEAKER_01": "Caller",
+      "SPEAKER_02": "Speaker 3",
+      "SPEAKER_03": "Speaker 4",
+    };
+    return labels[speaker] || speaker;
+  };
+
+  // Highlight sensitive patterns in text
+  const highlightSensitive = (text: string) => {
+    const sensitivePatterns = /(social security|ssn|credit card|\d{3}-\d{2}-\d{4})/gi;
+    const parts = text.split(sensitivePatterns);
+    return parts.map((part, j) => {
+      if (sensitivePatterns.test(part)) {
+        return (
+          <span key={j} className="bg-red-500/20 text-red-400 px-1 rounded">
+            {part}
+          </span>
+        );
+      }
+      return <span key={j}>{part}</span>;
+    });
+  };
+
+  // Render transcript with speaker segments
   const renderTranscript = () => {
     if (!call) return null;
 
@@ -187,27 +232,47 @@ export default function CallDetailPage({ params }: { params: Promise<{ id: strin
       );
     }
 
-    // Highlight sensitive patterns
-    const sensitivePatterns = /(social security|ssn|credit card|\d{3}-\d{2}-\d{4})/gi;
-    const lines = call.transcript_text.split("\n");
+    // If we have speaker segments, render them with attribution
+    const segments = call.transcript_segments as Array<{
+      speaker: string;
+      start: number;
+      end: number;
+      text: string;
+    }> | null;
 
-    return lines.map((line, i) => {
-      const parts = line.split(sensitivePatterns);
+    if (segments && Array.isArray(segments) && segments.length > 0) {
       return (
-        <div key={i} className="mb-3 leading-relaxed">
-          {parts.map((part, j) => {
-            if (sensitivePatterns.test(part)) {
-              return (
-                <span key={j} className="bg-red-500/20 text-red-400 px-1 rounded">
-                  {part}
-                </span>
-              );
-            }
-            return <span key={j}>{part}</span>;
-          })}
+        <div className="space-y-4">
+          {segments.map((segment, i) => (
+            <div key={i} className="flex gap-3">
+              {/* Timestamp */}
+              <div className="flex-shrink-0 w-12 text-xs text-zinc-600 font-mono pt-1">
+                {formatTimestamp(segment.start)}
+              </div>
+              {/* Speaker & Text */}
+              <div className="flex-1">
+                <div className={cn(
+                  "inline-block text-xs font-medium px-2 py-0.5 rounded border mb-1",
+                  getSpeakerColor(segment.speaker)
+                )}>
+                  {getSpeakerLabel(segment.speaker)}
+                </div>
+                <div className="text-zinc-300 leading-relaxed">
+                  {highlightSensitive(segment.text || "")}
+                </div>
+              </div>
+            </div>
+          ))}
         </div>
       );
-    });
+    }
+
+    // Fallback: render raw transcript text if no segments
+    return (
+      <div className="text-zinc-300 leading-relaxed whitespace-pre-wrap">
+        {highlightSensitive(call.transcript_text)}
+      </div>
+    );
   };
 
   if (loading) {

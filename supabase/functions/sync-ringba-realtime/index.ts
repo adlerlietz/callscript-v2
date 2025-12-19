@@ -141,6 +141,7 @@ const DEFAULT_ORG_ID = "00000000-0000-0000-0000-000000000001";
 
 /**
  * Upsert or find campaign by Ringba campaign ID.
+ * Also updates the name if it's currently "Unknown Campaign" and a real name is provided.
  */
 async function ensureCampaign(
   ringbaCampaignId: string,
@@ -150,12 +151,22 @@ async function ensureCampaign(
   // Try to find existing
   const { data: existing } = await supabase
     .from("campaigns")
-    .select("id")
+    .select("id, name")
     .eq("ringba_campaign_id", ringbaCampaignId)
     .eq("org_id", orgId)
     .maybeSingle();
 
-  if (existing) return existing.id;
+  if (existing) {
+    // Update name if currently "Unknown Campaign" and we have a real name
+    if (existing.name === "Unknown Campaign" && campaignName && campaignName !== "Unknown Campaign") {
+      await supabase
+        .from("campaigns")
+        .update({ name: campaignName, inference_source: "ringba_calllog" })
+        .eq("id", existing.id);
+      console.log(`Updated campaign name: ${ringbaCampaignId} -> ${campaignName}`);
+    }
+    return existing.id;
+  }
 
   // Create new
   const { data: created, error } = await supabase
@@ -200,16 +211,27 @@ Deno.serve(async (req) => {
         size: PAGE_SIZE,
         offset,
         valueColumns: [
+          // Core identifiers
+          { column: "inboundCallId" },
           { column: "callDt" },
-          { column: "inboundPhoneNumber" },
-          { column: "buyer" },
           { column: "callLengthInSeconds" },
+          { column: "inboundPhoneNumber" },
+          { column: "recordingUrl" },
+          // Campaign
           { column: "campaignId" },
+          { column: "campaignName" },
+          // Publisher attribution
           { column: "publisherId" },
+          { column: "publisherSubId" },
+          { column: "publisherName" },
+          // Buyer/Target routing
+          { column: "buyer" },
+          { column: "targetId" },
+          { column: "targetName" },
+          // Financial
           { column: "conversionAmount" },
           { column: "payoutAmount" },
-          { column: "recordingUrl" },
-          { column: "inboundCallId" },
+          // NOTE: Geographic columns (state, city) removed - not available in this Ringba account
         ],
       };
 
@@ -256,17 +278,34 @@ Deno.serve(async (req) => {
         }
       }
 
-      // Map to database schema
+      // Map to database schema (includes new analytics columns)
       const rows = records.map((r: any) => ({
+        // Core identifiers
         ringba_call_id: r.inboundCallId,
         org_id: DEFAULT_ORG_ID,
         campaign_id: r.campaignId ? campaignMap.get(r.campaignId) ?? null : null,
         start_time_utc: new Date(r.callDt).toISOString(),
+        status: "pending",
+        // Call metadata
         caller_number: r.inboundPhoneNumber ?? null,
         duration_seconds: r.callLengthInSeconds ?? null,
-        revenue: r.conversionAmount ?? 0,
         audio_url: r.recordingUrl ?? null,
-        status: "pending",
+        // Financial (revenue existing, payout new)
+        revenue: r.conversionAmount ?? 0,
+        payout: r.payoutAmount ?? 0,
+        // Publisher attribution (NEW)
+        publisher_id: r.publisherId ?? null,
+        publisher_sub_id: r.publisherSubId ?? null,
+        publisher_name: r.publisherName ?? null,
+        // Buyer/Target routing (NEW)
+        buyer_name: r.buyer ?? null,
+        target_id: r.targetId ?? null,
+        target_name: r.targetName ?? null,
+        // Geographic - not available in current Ringba account
+        caller_state: null,
+        caller_city: null,
+        // Raw payload for forensics
+        raw_payload: r,
       }));
 
       // Upsert to database

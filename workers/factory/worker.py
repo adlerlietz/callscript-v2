@@ -37,6 +37,7 @@ from workers.core import (
     get_audio_duration,
     transcribe,
     diarize,
+    align_transcript_with_speakers,
     CallsRepository,
 )
 
@@ -172,8 +173,15 @@ def process_call(
         # Step 5: Diarize
         # -----------------------------------------------------------------
         logger.info("Starting diarization...")
-        segments = diarize(diarizer, local_wav)
-        logger.info(f"Diarization complete - {len(segments)} segments")
+        raw_segments = diarize(diarizer, local_wav)
+        logger.info(f"Diarization complete - {len(raw_segments)} raw segments")
+
+        # -----------------------------------------------------------------
+        # Step 5.5: Align transcript with speaker segments
+        # -----------------------------------------------------------------
+        logger.info("Aligning transcript with speakers...")
+        segments = align_transcript_with_speakers(transcript_text, raw_segments)
+        logger.info(f"Alignment complete - {len(segments)} merged segments with text")
 
         # -----------------------------------------------------------------
         # Step 6: Save results

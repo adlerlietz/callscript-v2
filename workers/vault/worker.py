@@ -89,6 +89,7 @@ class VaultRepository:
         Query logic:
         - status = 'pending'
         - audio_url IS NOT NULL (has Ringba recording URL)
+        - storage_path IS NULL (not locked by another worker)
         - ORDER BY start_time_utc DESC (LIFO - newest first)
 
         Args:
@@ -104,6 +105,7 @@ class VaultRepository:
                 .select("id, audio_url, start_time_utc")
                 .eq("status", "pending")
                 .not_.is_("audio_url", "null")
+                .is_("storage_path", "null")  # Exclude locked rows
                 .order("start_time_utc", desc=True)
                 .limit(limit)
                 .execute()
@@ -112,6 +114,75 @@ class VaultRepository:
         except Exception as e:
             logger.error(f"Failed to fetch pending calls: {e}")
             raise
+
+    def lock_for_download(self, call_id: str) -> bool:
+        """
+        Atomically lock a call for download by setting storage_path to a lock value.
+
+        Lock conditions (all must be true):
+        - status = 'pending'
+        - storage_path IS NULL
+
+        The lock value format is 'vault_lock:{first 8 chars of id}'.
+        This prevents multiple workers from processing the same call.
+
+        Args:
+            call_id: UUID of the call to lock
+
+        Returns:
+            True if lock acquired, False if another worker claimed it
+        """
+        lock_value = f"vault_lock:{call_id[:8]}"
+
+        try:
+            response = (
+                self.schema
+                .from_("calls")
+                .update({
+                    "storage_path": lock_value,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                })
+                .eq("id", call_id)
+                .eq("status", "pending")
+                .is_("storage_path", "null")
+                .execute()
+            )
+
+            # Python Supabase client returns empty list when no rows affected
+            if not response.data:
+                logger.debug(f"Lock failed for {call_id} - claimed by another worker")
+                return False
+
+            logger.debug(f"Lock acquired for {call_id}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Lock error for {call_id}: {e}")
+            return False
+
+    def release_lock(self, call_id: str, error_msg: str | None = None) -> None:
+        """
+        Release lock by resetting storage_path to NULL.
+
+        Used when download fails with a transient error, allowing
+        the call to be picked up again later.
+
+        Args:
+            call_id: UUID of the call
+            error_msg: Optional error message to record
+        """
+        try:
+            update_data = {
+                "storage_path": None,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+            if error_msg:
+                update_data["processing_error"] = error_msg[:500]
+
+            self.schema.from_("calls").update(update_data).eq("id", call_id).execute()
+            logger.debug(f"Lock released for {call_id}")
+        except Exception as e:
+            logger.error(f"Failed to release lock for {call_id}: {e}")
 
     def upload_audio(self, storage_path: str, audio_bytes: bytes) -> None:
         """
@@ -257,7 +328,11 @@ def process_single_call(
     repo: VaultRepository,
 ) -> tuple[str, bool, str]:
     """
-    Process a single call: download and upload audio.
+    Process a single call: lock -> download -> upload audio.
+
+    Uses atomic locking to prevent race conditions with concurrent workers.
+    Lock is released on transient failures (allowing retry) but kept on
+    permanent failures (call marked as failed).
 
     Args:
         call: Call dict with id, audio_url, start_time_utc
@@ -275,11 +350,19 @@ def process_single_call(
         repo.mark_failed(call_id, "Audio URL is missing")
         return (call_id, False, "Missing audio URL")
 
+    # ==========================================================================
+    # STEP 0: Atomic lock - claim this call before downloading
+    # ==========================================================================
+    if not repo.lock_for_download(call_id):
+        # Another worker claimed it - skip silently
+        return (call_id, False, "Claimed by another worker")
+
     try:
         # Step 1: Download from Ringba
         audio_bytes = download_audio(audio_url)
 
         if len(audio_bytes) == 0:
+            # Permanent failure - keep lock (mark_failed sets status='failed')
             repo.mark_failed(call_id, "Downloaded audio is empty (0 bytes)")
             return (call_id, False, "Empty audio file")
 
@@ -289,7 +372,7 @@ def process_single_call(
         # Step 3: Upload to Supabase Storage
         repo.upload_audio(storage_path, audio_bytes)
 
-        # Step 4: Update database
+        # Step 4: Update database (overwrites lock value with real path)
         repo.mark_downloaded(call_id, storage_path)
 
         return (call_id, True, f"OK ({len(audio_bytes)} bytes)")
@@ -298,31 +381,35 @@ def process_single_call(
         status_code = e.response.status_code if e.response else 0
 
         if status_code in PERMANENT_FAILURE_CODES:
-            # Permanent failure - mark as failed immediately
+            # Permanent failure - mark as failed (releases lock via status change)
             error_msg = f"Audio URL expired or unavailable (HTTP {status_code})"
             repo.mark_failed(call_id, error_msg)
             return (call_id, False, error_msg)
         else:
-            # Transient error - leave as pending for retry
+            # Transient error - release lock for retry
             error_msg = f"HTTP error {status_code} - will retry"
+            repo.release_lock(call_id, error_msg)
             logger.warning(f"{call_id}: {error_msg}")
             return (call_id, False, error_msg)
 
     except requests.Timeout:
-        # Transient error - leave as pending
+        # Transient error - release lock for retry
         error_msg = "Download timeout - will retry"
+        repo.release_lock(call_id, error_msg)
         logger.warning(f"{call_id}: {error_msg}")
         return (call_id, False, error_msg)
 
     except requests.RequestException as e:
-        # Network error - leave as pending
+        # Network error - release lock for retry
         error_msg = f"Network error: {str(e)[:100]} - will retry"
+        repo.release_lock(call_id, error_msg)
         logger.warning(f"{call_id}: {error_msg}")
         return (call_id, False, error_msg)
 
     except Exception as e:
-        # Unexpected error - log but don't mark failed (might be transient)
+        # Unexpected error - release lock for retry
         error_msg = f"Unexpected error: {str(e)[:100]}"
+        repo.release_lock(call_id, error_msg)
         logger.error(f"{call_id}: {error_msg}")
         return (call_id, False, error_msg)
 

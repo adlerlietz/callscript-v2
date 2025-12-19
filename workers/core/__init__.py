@@ -13,6 +13,7 @@ from .models import (
     diarize,
 )
 from .db import CallsRepository, create_repository
+from .alignment import align_transcript_with_speakers, get_speaker_summary
 from .circuit_breaker import (
     CircuitBreaker,
     CircuitOpenError,
@@ -39,6 +40,9 @@ __all__ = [
     # Database
     "CallsRepository",
     "create_repository",
+    # Alignment
+    "align_transcript_with_speakers",
+    "get_speaker_summary",
     # Circuit Breaker
     "CircuitBreaker",
     "CircuitOpenError",

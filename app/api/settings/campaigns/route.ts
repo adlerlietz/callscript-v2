@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
+import { createClient, createCoreClient } from "@/lib/supabase/server";
 import { getAuthContext, isAdmin } from "@/lib/supabase/auth";
 
 /**
@@ -11,10 +11,25 @@ export async function GET() {
   // Verify user is authenticated and has org context
   const auth = await getAuthContext();
   if (!auth) {
+    console.error("[campaigns] No auth context - user not authenticated or no org");
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const supabase = await createClient();
+  console.log("[campaigns] Auth context:", {
+    userId: auth.userId.slice(0, 8),
+    orgId: auth.orgId,
+    role: auth.role,
+  });
+
+  const supabase = await createCoreClient();
+
+  // Debug: First check what campaigns exist (without org filter)
+  const { data: allCampaigns, error: debugError } = await supabase
+    .from("campaigns")
+    .select("id, org_id, name")
+    .limit(5);
+
+  console.log("[campaigns] Debug - All campaigns (first 5):", allCampaigns, "Error:", debugError);
 
   // Get all campaigns for this org
   const { data: campaigns, error } = await supabase
@@ -33,12 +48,18 @@ export async function GET() {
     .order("created_at", { ascending: false });
 
   if (error) {
-    console.error("Failed to fetch campaigns:", error);
+    console.error("[campaigns] Query error:", error);
     return NextResponse.json({ error: "Failed to fetch campaigns" }, { status: 500 });
   }
 
+  console.log("[campaigns] Filtered campaigns for org", auth.orgId, ":", campaigns?.length || 0);
+
+  console.log("[campaigns] Found", campaigns?.length || 0, "campaigns for org", auth.orgId);
+
   // Get call counts per campaign (filtered by org)
-  const { data: callCounts, error: countError } = await supabase
+  // Use public schema client since calls_overview is in public schema
+  const publicClient = await createClient();
+  const { data: callCounts, error: countError } = await publicClient
     .from("calls_overview")
     .select("campaign_id")
     .eq("org_id", auth.orgId)
@@ -70,6 +91,13 @@ export async function GET() {
     mapped,
     total: enriched.length,
     unmapped_count: unmapped.length,
+    // DEBUG: Remove after troubleshooting
+    _debug: {
+      userOrgId: auth.orgId,
+      allCampaignsVisible: allCampaigns?.length || 0,
+      allCampaignsData: allCampaigns,
+      debugError: debugError?.message || null,
+    },
   });
 }
 
@@ -90,7 +118,7 @@ export async function PATCH(request: NextRequest) {
     return NextResponse.json({ error: "Forbidden: admin access required" }, { status: 403 });
   }
 
-  const supabase = await createClient();
+  const supabase = await createCoreClient();
   const body = await request.json();
   const { id, name, vertical } = body;
 

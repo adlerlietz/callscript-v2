@@ -169,7 +169,25 @@ export function CallInspector({
     }
   };
 
-  // Render transcript with PII highlighting
+  // Speaker color mapping for consistent colors
+  const speakerColors: Record<string, string> = {
+    SPEAKER_00: "text-blue-400",
+    SPEAKER_01: "text-emerald-400",
+    SPEAKER_02: "text-amber-400",
+    SPEAKER_03: "text-purple-400",
+  };
+
+  const getSpeakerColor = (speaker: string) => {
+    return speakerColors[speaker] || "text-zinc-400";
+  };
+
+  const formatTimestamp = (seconds: number) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    return `${mins}:${secs.toString().padStart(2, "0")}`;
+  };
+
+  // Render transcript with speaker attribution (if segments have text) or plain
   const renderTranscript = () => {
     // Processing state
     if (["pending", "downloaded", "processing"].includes(call.status)) {
@@ -191,7 +209,54 @@ export function CallInspector({
       );
     }
 
-    // Highlight sensitive patterns
+    // Check if we have speaker-attributed segments with text
+    const segments = call.transcript_segments;
+    const hasAttributedSegments = segments &&
+      Array.isArray(segments) &&
+      segments.length > 0 &&
+      segments.some((seg: { text?: string }) => seg.text && seg.text.length > 0);
+
+    if (hasAttributedSegments) {
+      // Render speaker-attributed transcript
+      return (
+        <div className="space-y-4">
+          {segments.map((seg: { speaker: string; start: number; end: number; text?: string }, i: number) => {
+            if (!seg.text) return null;
+
+            // Highlight sensitive patterns in segment text
+            const sensitivePatterns = /(social security|ssn|credit card|\d{3}-\d{2}-\d{4})/gi;
+            const parts = seg.text.split(sensitivePatterns);
+
+            return (
+              <div key={i} className="flex gap-3">
+                <div className="flex-shrink-0 w-24">
+                  <div className={cn("text-xs font-medium", getSpeakerColor(seg.speaker))}>
+                    {seg.speaker.replace("SPEAKER_", "Speaker ")}
+                  </div>
+                  <div className="text-[10px] text-zinc-600 font-mono">
+                    {formatTimestamp(seg.start)}
+                  </div>
+                </div>
+                <div className="flex-1 text-sm text-zinc-300 leading-relaxed">
+                  {parts.map((part, j) => {
+                    if (sensitivePatterns.test(part)) {
+                      return (
+                        <span key={j} className="bg-red-500/20 text-red-400 px-1 rounded">
+                          {part}
+                        </span>
+                      );
+                    }
+                    return <span key={j}>{part}</span>;
+                  })}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      );
+    }
+
+    // Fallback: Plain transcript without speaker attribution
     const sensitivePatterns = /(social security|ssn|credit card|\d{3}-\d{2}-\d{4})/gi;
     const lines = call.transcript_text.split("\n");
 

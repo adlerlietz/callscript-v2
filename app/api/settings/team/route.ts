@@ -1,6 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createAdminClient } from "@/lib/supabase/server";
+import { createClient } from "@supabase/supabase-js";
 import { getAuthContext, isAdmin, isOwner } from "@/lib/supabase/auth";
+
+// Create admin client that properly bypasses RLS
+function createAdminSupabase() {
+  return createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!,
+    { db: { schema: "core" } }
+  );
+}
 
 /**
  * GET /api/settings/team
@@ -12,7 +21,7 @@ export async function GET() {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const supabase = await createAdminClient();
+  const supabase = createAdminSupabase();
 
   // Get all members with their user info
   const { data: members, error } = await supabase
@@ -88,14 +97,17 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Only owners can invite admins" }, { status: 403 });
   }
 
-  const supabase = await createAdminClient();
+  const supabase = createAdminSupabase();
 
-  // Check if user already exists
-  const { data: existingUser } = await supabase
-    .from("users")
-    .select("id")
-    .eq("email", email.toLowerCase())
-    .single();
+  // Check if user already exists in Supabase Auth
+  const { data: authUsers, error: listError } = await supabase.auth.admin.listUsers();
+  const existingUser = authUsers?.users?.find(
+    (u) => u.email?.toLowerCase() === email.toLowerCase()
+  );
+
+  if (listError) {
+    console.error("Failed to list users:", listError);
+  }
 
   if (existingUser) {
     // Check if already a member
@@ -124,7 +136,11 @@ export async function POST(request: NextRequest) {
 
     if (memberError) {
       console.error("Failed to add member:", memberError);
-      return NextResponse.json({ error: "Failed to add member" }, { status: 500 });
+      return NextResponse.json({
+        error: "Failed to add member",
+        details: memberError.message,
+        code: memberError.code,
+      }, { status: 500 });
     }
 
     // Update their app_metadata
@@ -159,7 +175,11 @@ export async function POST(request: NextRequest) {
 
   if (inviteError) {
     console.error("Failed to send invite:", inviteError);
-    return NextResponse.json({ error: "Failed to send invite" }, { status: 500 });
+    return NextResponse.json({
+      error: "Failed to send invite",
+      details: inviteError.message,
+      code: inviteError.code || inviteError.status,
+    }, { status: 500 });
   }
 
   // Create pending membership
@@ -221,7 +241,7 @@ export async function PATCH(request: NextRequest) {
     return NextResponse.json({ error: "Invalid role" }, { status: 400 });
   }
 
-  const supabase = await createAdminClient();
+  const supabase = createAdminSupabase();
 
   // Get the member
   const { data: member } = await supabase
@@ -284,7 +304,7 @@ export async function DELETE(request: NextRequest) {
     return NextResponse.json({ error: "Member ID is required" }, { status: 400 });
   }
 
-  const supabase = await createAdminClient();
+  const supabase = createAdminSupabase();
 
   // Get the member
   const { data: member } = await supabase

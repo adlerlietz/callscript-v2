@@ -11,6 +11,8 @@ import {
   X,
   ArrowRight,
   Info,
+  Plus,
+  Trash2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -36,7 +38,30 @@ interface Vertical {
   description: string;
   icon: string;
   color: string;
+  is_system?: boolean;
 }
+
+// Color options for custom verticals
+const COLOR_OPTIONS = [
+  { id: "blue", label: "Blue", class: "bg-blue-500" },
+  { id: "sky", label: "Sky", class: "bg-sky-500" },
+  { id: "cyan", label: "Cyan", class: "bg-cyan-500" },
+  { id: "teal", label: "Teal", class: "bg-teal-500" },
+  { id: "emerald", label: "Emerald", class: "bg-emerald-500" },
+  { id: "green", label: "Green", class: "bg-green-500" },
+  { id: "yellow", label: "Yellow", class: "bg-yellow-500" },
+  { id: "amber", label: "Amber", class: "bg-amber-500" },
+  { id: "orange", label: "Orange", class: "bg-orange-500" },
+  { id: "red", label: "Red", class: "bg-red-500" },
+  { id: "rose", label: "Rose", class: "bg-rose-500" },
+  { id: "pink", label: "Pink", class: "bg-pink-500" },
+  { id: "purple", label: "Purple", class: "bg-purple-500" },
+  { id: "violet", label: "Violet", class: "bg-violet-500" },
+  { id: "indigo", label: "Indigo", class: "bg-indigo-500" },
+];
+
+// Common emoji icons for verticals
+const ICON_OPTIONS = ["📋", "📞", "💼", "🏠", "🚗", "💰", "🏥", "⚡", "🔧", "📊", "🎯", "💎", "🛡️", "📱", "🌐"];
 
 // =============================================================================
 // Components
@@ -55,10 +80,19 @@ function VerticalBadge({
   const colorMap: Record<string, string> = {
     blue: "bg-blue-500/10 text-blue-400 border-blue-500/30",
     sky: "bg-sky-500/10 text-sky-400 border-sky-500/30",
-    yellow: "bg-yellow-500/10 text-yellow-400 border-yellow-500/30",
-    red: "bg-red-500/10 text-red-400 border-red-500/30",
+    cyan: "bg-cyan-500/10 text-cyan-400 border-cyan-500/30",
+    teal: "bg-teal-500/10 text-teal-400 border-teal-500/30",
     emerald: "bg-emerald-500/10 text-emerald-400 border-emerald-500/30",
+    green: "bg-green-500/10 text-green-400 border-green-500/30",
+    yellow: "bg-yellow-500/10 text-yellow-400 border-yellow-500/30",
+    amber: "bg-amber-500/10 text-amber-400 border-amber-500/30",
     orange: "bg-orange-500/10 text-orange-400 border-orange-500/30",
+    red: "bg-red-500/10 text-red-400 border-red-500/30",
+    rose: "bg-rose-500/10 text-rose-400 border-rose-500/30",
+    pink: "bg-pink-500/10 text-pink-400 border-pink-500/30",
+    purple: "bg-purple-500/10 text-purple-400 border-purple-500/30",
+    violet: "bg-violet-500/10 text-violet-400 border-violet-500/30",
+    indigo: "bg-indigo-500/10 text-indigo-400 border-indigo-500/30",
     zinc: "bg-zinc-500/10 text-zinc-400 border-zinc-500/30",
   };
 
@@ -84,11 +118,13 @@ function CampaignEditModal({
   verticals,
   onSave,
   onClose,
+  onCreateVertical,
 }: {
   campaign: Campaign;
   verticals: Vertical[];
   onSave: (id: string, name: string, vertical: string) => Promise<void>;
   onClose: () => void;
+  onCreateVertical: () => void;
 }) {
   const [name, setName] = useState(campaign.name || "");
   const [vertical, setVertical] = useState(campaign.vertical || "general");
@@ -103,7 +139,7 @@ function CampaignEditModal({
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="bg-zinc-900 rounded-lg border border-zinc-800 p-6 w-full max-w-md">
+      <div className="bg-zinc-900 rounded-lg border border-zinc-800 p-6 w-full max-w-md max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between mb-6">
           <h3 className="text-lg font-semibold text-zinc-100">Map Campaign</h3>
           <button onClick={onClose} className="text-zinc-500 hover:text-zinc-300">
@@ -151,9 +187,18 @@ function CampaignEditModal({
           </div>
 
           <div>
-            <label className="block text-xs font-medium text-zinc-500 uppercase tracking-wider mb-2">
-              Vertical
-            </label>
+            <div className="flex items-center justify-between mb-2">
+              <label className="block text-xs font-medium text-zinc-500 uppercase tracking-wider">
+                Vertical
+              </label>
+              <button
+                onClick={onCreateVertical}
+                className="text-xs text-blue-400 hover:text-blue-300 flex items-center gap-1"
+              >
+                <Plus className="h-3 w-3" />
+                Create New
+              </button>
+            </div>
             <p className="text-xs text-zinc-500 mb-3">
               The vertical determines which QA rules apply to calls from this campaign.
             </p>
@@ -203,6 +248,163 @@ function CampaignEditModal({
 }
 
 // =============================================================================
+// Create Vertical Modal
+// =============================================================================
+
+function CreateVerticalModal({
+  onSave,
+  onClose,
+}: {
+  onSave: (vertical: { name: string; description: string; icon: string; color: string }) => Promise<boolean>;
+  onClose: () => void;
+}) {
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [icon, setIcon] = useState("📋");
+  const [color, setColor] = useState("blue");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleSave = async () => {
+    if (!name.trim()) {
+      setError("Name is required");
+      return;
+    }
+    setError(null);
+    setSaving(true);
+    const success = await onSave({ name, description, icon, color });
+    setSaving(false);
+    if (success) {
+      onClose();
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+      <div className="bg-zinc-900 rounded-lg border border-zinc-800 p-6 w-full max-w-md max-h-[90vh] overflow-y-auto">
+        <div className="flex items-center justify-between mb-6">
+          <h3 className="text-lg font-semibold text-zinc-100">Create Custom Vertical</h3>
+          <button onClick={onClose} className="text-zinc-500 hover:text-zinc-300">
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        <div className="space-y-5">
+          {error && (
+            <div className="rounded-lg bg-red-500/10 border border-red-500/30 p-3 text-sm text-red-400">
+              {error}
+            </div>
+          )}
+
+          <div>
+            <label className="block text-xs font-medium text-zinc-500 uppercase tracking-wider mb-2">
+              Vertical Name *
+            </label>
+            <Input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="e.g., Legal Services"
+              className="bg-zinc-800 border-zinc-700"
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium text-zinc-500 uppercase tracking-wider mb-2">
+              Description
+            </label>
+            <Input
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="e.g., Personal injury and legal leads"
+              className="bg-zinc-800 border-zinc-700"
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium text-zinc-500 uppercase tracking-wider mb-2">
+              Icon
+            </label>
+            <div className="flex flex-wrap gap-2">
+              {ICON_OPTIONS.map((i) => (
+                <button
+                  key={i}
+                  onClick={() => setIcon(i)}
+                  className={cn(
+                    "w-10 h-10 rounded-lg border text-lg flex items-center justify-center transition-colors",
+                    icon === i
+                      ? "bg-zinc-700 border-zinc-600"
+                      : "bg-zinc-800/50 border-zinc-800 hover:bg-zinc-800"
+                  )}
+                >
+                  {i}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium text-zinc-500 uppercase tracking-wider mb-2">
+              Color
+            </label>
+            <div className="flex flex-wrap gap-2">
+              {COLOR_OPTIONS.map((c) => (
+                <button
+                  key={c.id}
+                  onClick={() => setColor(c.id)}
+                  className={cn(
+                    "w-8 h-8 rounded-full transition-all",
+                    c.class,
+                    color === c.id ? "ring-2 ring-white ring-offset-2 ring-offset-zinc-900" : ""
+                  )}
+                  title={c.label}
+                />
+              ))}
+            </div>
+          </div>
+
+          {/* Preview */}
+          <div>
+            <label className="block text-xs font-medium text-zinc-500 uppercase tracking-wider mb-2">
+              Preview
+            </label>
+            <div className="p-3 bg-zinc-800/50 rounded-lg border border-zinc-700/50">
+              <span
+                className={cn(
+                  "inline-flex items-center gap-1.5 px-2 py-1 rounded-md border text-sm",
+                  `bg-${color}-500/10 text-${color}-400 border-${color}-500/30`
+                )}
+                style={{
+                  backgroundColor: `color-mix(in srgb, var(--color-${color}-500, #6b7280) 10%, transparent)`,
+                  color: `var(--color-${color}-400, #9ca3af)`,
+                  borderColor: `color-mix(in srgb, var(--color-${color}-500, #6b7280) 30%, transparent)`,
+                }}
+              >
+                <span>{icon}</span>
+                <span>{name || "New Vertical"}</span>
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div className="flex justify-end gap-3 mt-6">
+          <Button variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button onClick={handleSave} disabled={saving || !name.trim()}>
+            {saving ? (
+              <Loader2 className="h-4 w-4 animate-spin mr-2" />
+            ) : (
+              <Plus className="h-4 w-4 mr-2" />
+            )}
+            Create Vertical
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// =============================================================================
 // Main Page
 // =============================================================================
 
@@ -214,6 +416,7 @@ export default function CampaignsPage() {
   }>({ unmapped: [], mapped: [] });
   const [verticals, setVerticals] = useState<Vertical[]>([]);
   const [editingCampaign, setEditingCampaign] = useState<Campaign | null>(null);
+  const [showCreateVertical, setShowCreateVertical] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
 
   // Fetch data
@@ -253,6 +456,30 @@ export default function CampaignsPage() {
       body: JSON.stringify({ id, name, vertical }),
     });
     await fetchData();
+  };
+
+  const handleCreateVertical = async (vertical: {
+    name: string;
+    description: string;
+    icon: string;
+    color: string;
+  }): Promise<boolean> => {
+    const res = await fetch("/api/settings/verticals", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(vertical),
+    });
+
+    if (res.ok) {
+      // Refresh verticals list
+      const verticalsRes = await fetch("/api/settings/verticals");
+      if (verticalsRes.ok) {
+        const data = await verticalsRes.json();
+        setVerticals(data.verticals || []);
+      }
+      return true;
+    }
+    return false;
   };
 
   // Filter campaigns
@@ -440,13 +667,21 @@ export default function CampaignsPage() {
         </div>
       </div>
 
-      {/* Modal */}
+      {/* Modals */}
       {editingCampaign && (
         <CampaignEditModal
           campaign={editingCampaign}
           verticals={verticals}
           onSave={handleSaveCampaign}
           onClose={() => setEditingCampaign(null)}
+          onCreateVertical={() => setShowCreateVertical(true)}
+        />
+      )}
+
+      {showCreateVertical && (
+        <CreateVerticalModal
+          onSave={handleCreateVertical}
+          onClose={() => setShowCreateVertical(false)}
         />
       )}
     </div>

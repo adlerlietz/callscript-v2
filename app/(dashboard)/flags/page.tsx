@@ -1,11 +1,11 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { Download, CheckCircle, XCircle, RefreshCw } from "lucide-react";
+import { Download, CheckCircle, XCircle, RefreshCw, ChevronLeft, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { CallInspector } from "@/components/call-inspector";
-import { cn, formatDate, formatDuration, truncateId } from "@/lib/utils";
+import { cn, formatDate, formatDuration, truncateId, formatSourceName } from "@/lib/utils";
 import type { Call, QaFlags, FlagSeverity, CallStatus } from "@/lib/database.types";
 
 function SeverityBadge({ severity }: { severity: FlagSeverity }) {
@@ -39,6 +39,8 @@ function getFirstSnippet(flags: QaFlags | null): string {
   return "Flagged for review";
 }
 
+const PAGE_SIZE = 50;
+
 export default function FlagsPage() {
   const [calls, setCalls] = useState<Call[]>([]);
   const [selectedCall, setSelectedCall] = useState<Call | null>(null);
@@ -47,14 +49,25 @@ export default function FlagsPage() {
   const [refreshing, setRefreshing] = useState(false);
   const [updating, setUpdating] = useState<string | null>(null);
 
-  const fetchFlags = useCallback(async (showRefresh = false) => {
+  // Pagination state
+  const [offset, setOffset] = useState(0);
+  const [total, setTotal] = useState(0);
+
+  const fetchFlags = useCallback(async (newOffset = 0, showRefresh = false) => {
     if (showRefresh) setRefreshing(true);
+    else setLoading(true);
 
     try {
-      const res = await fetch("/api/flags?limit=100");
+      const res = await fetch(`/api/flags?limit=${PAGE_SIZE}&offset=${newOffset}`);
       if (res.ok) {
         const data = await res.json();
         setCalls(data.flags || []);
+        setTotal(data.total || 0);
+        setOffset(newOffset);
+        // Clear selections when changing pages
+        if (newOffset !== offset) {
+          setSelectedIds(new Set());
+        }
       }
     } catch (error) {
       console.error("Failed to fetch flagged calls:", error);
@@ -62,7 +75,7 @@ export default function FlagsPage() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, []);
+  }, [offset]);
 
   useEffect(() => {
     fetchFlags();
@@ -135,10 +148,11 @@ export default function FlagsPage() {
   const handleExportCSV = () => {
     const selected = calls.filter((c) => selectedIds.has(c.id));
     const csv = [
-      ["ID", "Date", "Severity", "Duration", "Revenue"].join(","),
+      ["ID", "Source", "Date", "Severity", "Duration", "Revenue"].join(","),
       ...selected.map((c) =>
         [
           c.id,
+          formatSourceName(c.publisher_id, c.buyer_name, c.publisher_name) || "",
           c.start_time_utc,
           getHighestSeverity(c.qa_flags),
           c.duration_seconds || 0,
@@ -163,13 +177,13 @@ export default function FlagsPage() {
         <div>
           <h1 className="text-2xl font-semibold text-zinc-100">Flagged Calls</h1>
           <p className="text-sm text-zinc-500">
-            {loading ? "Loading..." : `${calls.length} calls requiring review`}
+            {loading ? "Loading..." : `${total.toLocaleString()} calls requiring review`}
           </p>
         </div>
         <Button
           variant="outline"
           size="icon"
-          onClick={() => fetchFlags(true)}
+          onClick={() => fetchFlags(offset, true)}
           disabled={refreshing}
         >
           <RefreshCw className={cn("h-4 w-4", refreshing && "animate-spin")} />
@@ -195,9 +209,20 @@ export default function FlagsPage() {
         </div>
       )}
 
-      {/* Table */}
-      <div className="rounded-lg border border-zinc-800 overflow-hidden">
-        <table className="w-full">
+      {/* Pagination helpers */}
+      {(() => {
+        const currentPage = Math.floor(offset / PAGE_SIZE) + 1;
+        const totalPages = Math.ceil(total / PAGE_SIZE);
+        const hasNext = offset + PAGE_SIZE < total;
+        const hasPrev = offset > 0;
+        const showingStart = total === 0 ? 0 : offset + 1;
+        const showingEnd = Math.min(offset + PAGE_SIZE, total);
+
+        return (
+          <>
+            {/* Table */}
+            <div className="rounded-lg border border-zinc-800 overflow-hidden">
+              <table className="w-full">
           <thead className="bg-zinc-900">
             <tr>
               <th className="w-12 px-4 py-3">
@@ -207,6 +232,9 @@ export default function FlagsPage() {
                   onChange={toggleSelectAll}
                   className="h-4 w-4 rounded border-zinc-700 bg-zinc-800 text-zinc-100 focus:ring-zinc-400"
                 />
+              </th>
+              <th className="px-4 py-3 text-left text-xs font-medium text-zinc-400 uppercase tracking-wider">
+                Source
               </th>
               <th className="px-4 py-3 text-left text-xs font-medium text-zinc-400 uppercase tracking-wider">
                 Date
@@ -232,14 +260,14 @@ export default function FlagsPage() {
             {loading ? (
               [...Array(5)].map((_, i) => (
                 <tr key={i}>
-                  <td colSpan={7} className="px-4 py-4">
+                  <td colSpan={8} className="px-4 py-4">
                     <div className="h-6 animate-pulse rounded bg-zinc-800" />
                   </td>
                 </tr>
               ))
             ) : calls.length === 0 ? (
               <tr>
-                <td colSpan={7} className="px-4 py-12 text-center">
+                <td colSpan={8} className="px-4 py-12 text-center">
                   <CheckCircle className="mx-auto h-12 w-12 text-emerald-500" />
                   <h3 className="mt-4 text-lg font-medium text-zinc-100">All Clear</h3>
                   <p className="mt-2 text-sm text-zinc-500">
@@ -266,6 +294,11 @@ export default function FlagsPage() {
                       onChange={(e) => toggleSelect(call.id, e as unknown as React.MouseEvent)}
                       className="h-4 w-4 rounded border-zinc-700 bg-zinc-800 text-zinc-100 focus:ring-zinc-400"
                     />
+                  </td>
+                  <td className="px-4 py-4">
+                    <span className="text-sm font-medium text-white">
+                      {formatSourceName(call.publisher_id, call.buyer_name, call.publisher_name) || "—"}
+                    </span>
                   </td>
                   <td className="px-4 py-4">
                     <div className="text-sm text-zinc-300">{formatDate(call.start_time_utc)}</div>
@@ -314,9 +347,44 @@ export default function FlagsPage() {
                 </tr>
               ))
             )}
-          </tbody>
-        </table>
-      </div>
+              </tbody>
+              </table>
+            </div>
+
+            {/* Pagination Controls */}
+            {total > PAGE_SIZE && (
+              <div className="flex items-center justify-between border border-zinc-800 border-t-0 rounded-b-lg bg-zinc-900/50 px-4 py-3">
+                <span className="text-sm text-zinc-500">
+                  Showing {showingStart.toLocaleString()}-{showingEnd.toLocaleString()} of {total.toLocaleString()}
+                </span>
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={!hasPrev || loading}
+                    onClick={() => fetchFlags(offset - PAGE_SIZE)}
+                  >
+                    <ChevronLeft className="h-4 w-4 mr-1" />
+                    Previous
+                  </Button>
+                  <span className="px-3 py-1 text-sm text-zinc-400">
+                    Page {currentPage} of {totalPages}
+                  </span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={!hasNext || loading}
+                    onClick={() => fetchFlags(offset + PAGE_SIZE)}
+                  >
+                    Next
+                    <ChevronRight className="h-4 w-4 ml-1" />
+                  </Button>
+                </div>
+              </div>
+            )}
+          </>
+        );
+      })()}
 
       {/* Call Inspector Sheet */}
       <CallInspector

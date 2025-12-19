@@ -15,6 +15,7 @@ import {
   X,
   Info,
   Zap,
+  AlertTriangle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -226,14 +227,20 @@ function RuleEditModal({
 // =============================================================================
 
 function AddRuleModal({
+  verticals,
+  initialVertical,
   onSave,
   onClose,
 }: {
+  verticals: Vertical[];
+  initialVertical?: string | null;
   onSave: (rule: {
     name: string;
     description: string;
     severity: "critical" | "warning";
     prompt_fragment: string;
+    scope: "global" | "vertical" | "custom";
+    vertical: string | null;
   }) => Promise<void>;
   onClose: () => void;
 }) {
@@ -241,66 +248,167 @@ function AddRuleModal({
   const [description, setDescription] = useState("");
   const [severity, setSeverity] = useState<"critical" | "warning">("warning");
   const [promptFragment, setPromptFragment] = useState("");
+  const [scope, setScope] = useState<"global" | "vertical" | "custom">(
+    initialVertical ? "vertical" : "custom"
+  );
+  const [vertical, setVertical] = useState<string | null>(initialVertical || null);
   const [saving, setSaving] = useState(false);
 
   const templates = [
     {
-      label: "Must mention phrase",
-      prompt: 'Flag if the agent does NOT say "[PHRASE]" during the call.',
+      label: "Must say phrase",
+      prompt: 'Flag if the agent does NOT say "[YOUR PHRASE HERE]" during the call.',
     },
     {
-      label: "Must not say",
-      prompt: 'Flag if the agent says "[PROHIBITED_PHRASE]" or similar language.',
+      label: "Must NOT say",
+      prompt: 'Flag if the agent says "[PROHIBITED PHRASE]" or similar language.',
     },
     {
       label: "Required disclosure",
-      prompt: 'Flag if the agent fails to disclose "[DISCLOSURE]" before asking for personal information.',
+      prompt: 'Flag if the agent fails to disclose "[REQUIRED DISCLOSURE]" before collecting personal information.',
     },
-    { label: "Custom", prompt: "Flag if..." },
+    {
+      label: "Verify identity",
+      prompt: "Flag if the agent does not verify the caller's identity before discussing account details.",
+    },
+    {
+      label: "No pressure tactics",
+      prompt: "Flag if the agent uses high-pressure sales tactics or creates false urgency.",
+    },
+    {
+      label: "Custom",
+      prompt: "Flag if...",
+    },
   ];
 
   const handleSave = async () => {
     setSaving(true);
-    await onSave({ name, description, severity, prompt_fragment: promptFragment });
+    await onSave({
+      name,
+      description,
+      severity,
+      prompt_fragment: promptFragment,
+      scope,
+      vertical: scope === "vertical" ? vertical : null,
+    });
     setSaving(false);
     onClose();
   };
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="bg-zinc-900 rounded-lg border border-zinc-800 p-6 w-full max-w-lg">
+      <div className="bg-zinc-900 rounded-lg border border-zinc-800 p-6 w-full max-w-lg max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between mb-6">
-          <h3 className="text-lg font-semibold text-zinc-100">Add Custom Rule</h3>
+          <h3 className="text-lg font-semibold text-zinc-100">Create QA Rule</h3>
           <button onClick={onClose} className="text-zinc-500 hover:text-zinc-300">
             <X className="h-5 w-5" />
           </button>
         </div>
 
-        <div className="space-y-4">
+        <div className="space-y-5">
+          {/* Scope Selection */}
           <div>
             <label className="block text-xs font-medium text-zinc-500 uppercase tracking-wider mb-2">
-              Rule Name
+              Rule Applies To
+            </label>
+            <div className="grid grid-cols-3 gap-2">
+              <button
+                onClick={() => { setScope("vertical"); if (!vertical && verticals.length > 0) setVertical(verticals[0].id); }}
+                className={cn(
+                  "px-3 py-2.5 rounded-lg border text-sm transition-colors text-center",
+                  scope === "vertical"
+                    ? "bg-blue-500/10 border-blue-500/30 text-blue-400"
+                    : "bg-zinc-800 border-zinc-700 text-zinc-400 hover:bg-zinc-700"
+                )}
+              >
+                <Zap className="h-4 w-4 mx-auto mb-1" />
+                Vertical
+              </button>
+              <button
+                onClick={() => setScope("global")}
+                className={cn(
+                  "px-3 py-2.5 rounded-lg border text-sm transition-colors text-center",
+                  scope === "global"
+                    ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400"
+                    : "bg-zinc-800 border-zinc-700 text-zinc-400 hover:bg-zinc-700"
+                )}
+              >
+                <ShieldCheck className="h-4 w-4 mx-auto mb-1" />
+                All Calls
+              </button>
+              <button
+                onClick={() => setScope("custom")}
+                className={cn(
+                  "px-3 py-2.5 rounded-lg border text-sm transition-colors text-center",
+                  scope === "custom"
+                    ? "bg-purple-500/10 border-purple-500/30 text-purple-400"
+                    : "bg-zinc-800 border-zinc-700 text-zinc-400 hover:bg-zinc-700"
+                )}
+              >
+                <Shield className="h-4 w-4 mx-auto mb-1" />
+                Custom
+              </button>
+            </div>
+            <p className="text-xs text-zinc-500 mt-2">
+              {scope === "vertical" && "This rule will only apply to calls from campaigns in the selected vertical."}
+              {scope === "global" && "This rule will apply to ALL calls regardless of vertical."}
+              {scope === "custom" && "Custom rules apply to all calls but are organized separately."}
+            </p>
+          </div>
+
+          {/* Vertical Selector (when scope is vertical) */}
+          {scope === "vertical" && (
+            <div>
+              <label className="block text-xs font-medium text-zinc-500 uppercase tracking-wider mb-2">
+                Select Vertical
+              </label>
+              <div className="grid grid-cols-2 gap-2">
+                {verticals.filter(v => v.id !== "general").map((v) => (
+                  <button
+                    key={v.id}
+                    onClick={() => setVertical(v.id)}
+                    className={cn(
+                      "flex items-center gap-2 px-3 py-2 rounded-lg border text-left transition-colors",
+                      vertical === v.id
+                        ? "bg-zinc-700 border-zinc-600 text-zinc-100"
+                        : "bg-zinc-800/50 border-zinc-800 text-zinc-400 hover:bg-zinc-800"
+                    )}
+                  >
+                    <span>{v.icon}</span>
+                    <span className="text-sm">{v.name}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Rule Name */}
+          <div>
+            <label className="block text-xs font-medium text-zinc-500 uppercase tracking-wider mb-2">
+              Rule Name *
             </label>
             <Input
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="e.g., Zero Down Disclosure"
+              placeholder="e.g., Accident Date Required"
               className="bg-zinc-800 border-zinc-700"
             />
           </div>
 
+          {/* Description */}
           <div>
             <label className="block text-xs font-medium text-zinc-500 uppercase tracking-wider mb-2">
-              Description (Optional)
+              Description
             </label>
             <Input
               value={description}
               onChange={(e) => setDescription(e.target.value)}
-              placeholder="What this rule checks"
+              placeholder="Brief description of what this rule checks"
               className="bg-zinc-800 border-zinc-700"
             />
           </div>
 
+          {/* Severity */}
           <div>
             <label className="block text-xs font-medium text-zinc-500 uppercase tracking-wider mb-2">
               Severity
@@ -315,7 +423,9 @@ function AddRuleModal({
                     : "bg-zinc-800 border-zinc-700 text-zinc-400 hover:bg-zinc-700"
                 )}
               >
+                <ShieldAlert className="h-4 w-4 inline mr-2" />
                 Critical
+                <span className="block text-xs opacity-70">Auto-flags call</span>
               </button>
               <button
                 onClick={() => setSeverity("warning")}
@@ -326,21 +436,24 @@ function AddRuleModal({
                     : "bg-zinc-800 border-zinc-700 text-zinc-400 hover:bg-zinc-700"
                 )}
               >
+                <AlertTriangle className="h-4 w-4 inline mr-2" />
                 Warning
+                <span className="block text-xs opacity-70">Lowers QA score</span>
               </button>
             </div>
           </div>
 
+          {/* Template Shortcuts */}
           <div>
             <label className="block text-xs font-medium text-zinc-500 uppercase tracking-wider mb-2">
-              Template
+              Quick Templates
             </label>
             <div className="flex flex-wrap gap-2">
               {templates.map((t) => (
                 <button
                   key={t.label}
                   onClick={() => setPromptFragment(t.prompt)}
-                  className="px-2 py-1 text-xs bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded text-zinc-400"
+                  className="px-2.5 py-1.5 text-xs bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-md text-zinc-400 transition-colors"
                 >
                   {t.label}
                 </button>
@@ -348,31 +461,38 @@ function AddRuleModal({
             </div>
           </div>
 
+          {/* AI Instruction */}
           <div>
             <label className="block text-xs font-medium text-zinc-500 uppercase tracking-wider mb-2">
-              AI Instruction
+              AI Instruction *
             </label>
+            <p className="text-xs text-zinc-500 mb-2">
+              This exact text is sent to the AI. Be specific about what should trigger a flag.
+            </p>
             <textarea
               value={promptFragment}
               onChange={(e) => setPromptFragment(e.target.value)}
               rows={4}
               className="w-full bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-100 placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-zinc-600"
-              placeholder="Flag if..."
+              placeholder="Flag if the agent fails to..."
             />
           </div>
         </div>
 
-        <div className="flex justify-end gap-3 mt-6">
+        <div className="flex justify-end gap-3 mt-6 pt-4 border-t border-zinc-800">
           <Button variant="ghost" onClick={onClose}>
             Cancel
           </Button>
-          <Button onClick={handleSave} disabled={saving || !name || !promptFragment}>
+          <Button
+            onClick={handleSave}
+            disabled={saving || !name || !promptFragment || (scope === "vertical" && !vertical)}
+          >
             {saving ? (
               <Loader2 className="h-4 w-4 animate-spin mr-2" />
             ) : (
               <Plus className="h-4 w-4 mr-2" />
             )}
-            Add Rule
+            Create Rule
           </Button>
         </div>
       </div>
@@ -393,7 +513,7 @@ export default function QARulesPage() {
   }>({ global: [], vertical: {}, custom: [] });
   const [verticals, setVerticals] = useState<Vertical[]>([]);
   const [editingRule, setEditingRule] = useState<QARule | null>(null);
-  const [addingRule, setAddingRule] = useState(false);
+  const [addingRule, setAddingRule] = useState<{ open: boolean; vertical?: string | null }>({ open: false });
   const [expandedVerticals, setExpandedVerticals] = useState<Set<string>>(new Set());
 
   // Fetch data
@@ -453,6 +573,8 @@ export default function QARulesPage() {
     description: string;
     severity: "critical" | "warning";
     prompt_fragment: string;
+    scope: "global" | "vertical" | "custom";
+    vertical: string | null;
   }) => {
     await fetch("/api/settings/rules", {
       method: "POST",
@@ -606,48 +728,82 @@ export default function QARulesPage() {
                       )}
                     </button>
 
-                    {isExpanded && verticalRules.length > 0 && (
-                      <div className="border-t border-zinc-800 divide-y divide-zinc-800">
-                        {verticalRules.map((rule) => (
-                          <div
-                            key={rule.id}
-                            className={cn(
-                              "flex items-center justify-between p-4",
-                              !rule.enabled && "opacity-60"
-                            )}
-                          >
-                            <div className="flex-1 pl-8">
-                              <div className="flex items-center gap-3">
-                                <h4 className="text-sm font-medium text-zinc-200">
-                                  {rule.name}
-                                </h4>
-                                <SeverityBadge severity={rule.severity} />
-                              </div>
-                              <p className="mt-1 text-sm text-zinc-500">
-                                {rule.description}
-                              </p>
-                            </div>
-                            <div className="flex items-center gap-3">
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => setEditingRule(rule)}
+                    {isExpanded && (
+                      <div className="border-t border-zinc-800">
+                        {verticalRules.length > 0 && (
+                          <div className="divide-y divide-zinc-800">
+                            {verticalRules.map((rule) => (
+                              <div
+                                key={rule.id}
+                                className={cn(
+                                  "flex items-center justify-between p-4",
+                                  !rule.enabled && "opacity-60"
+                                )}
                               >
-                                <Edit2 className="h-3 w-3" />
-                              </Button>
-                              <Toggle
-                                enabled={rule.enabled}
-                                onToggle={() => handleToggleRule(rule)}
-                              />
-                            </div>
+                                <div className="flex-1 pl-8">
+                                  <div className="flex items-center gap-3">
+                                    <h4 className="text-sm font-medium text-zinc-200">
+                                      {rule.name}
+                                    </h4>
+                                    <SeverityBadge severity={rule.severity} />
+                                    {!rule.is_system && (
+                                      <Badge variant="default" className="text-xs bg-purple-500/10 text-purple-400 border-purple-500/30">
+                                        Custom
+                                      </Badge>
+                                    )}
+                                  </div>
+                                  <p className="mt-1 text-sm text-zinc-500">
+                                    {rule.description}
+                                  </p>
+                                </div>
+                                <div className="flex items-center gap-3">
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={() => setEditingRule(rule)}
+                                  >
+                                    <Edit2 className="h-3 w-3" />
+                                  </Button>
+                                  {!rule.is_system && (
+                                    <Button
+                                      variant="ghost"
+                                      size="sm"
+                                      onClick={() => handleDeleteRule(rule.id)}
+                                      className="text-red-400 hover:text-red-300"
+                                    >
+                                      <Trash2 className="h-3 w-3" />
+                                    </Button>
+                                  )}
+                                  <Toggle
+                                    enabled={rule.enabled}
+                                    onToggle={() => handleToggleRule(rule)}
+                                  />
+                                </div>
+                              </div>
+                            ))}
                           </div>
-                        ))}
-                      </div>
-                    )}
+                        )}
 
-                    {isExpanded && verticalRules.length === 0 && (
-                      <div className="p-4 text-center text-sm text-zinc-500 border-t border-zinc-800">
-                        No rules configured for {v.name}
+                        {verticalRules.length === 0 && (
+                          <div className="p-6 text-center">
+                            <p className="text-sm text-zinc-500 mb-3">
+                              No rules configured for {v.name} yet
+                            </p>
+                          </div>
+                        )}
+
+                        {/* Add Rule Button for this vertical */}
+                        <div className="p-3 bg-zinc-800/30 border-t border-zinc-800">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="w-full text-zinc-400 hover:text-zinc-200"
+                            onClick={() => setAddingRule({ open: true, vertical: v.id })}
+                          >
+                            <Plus className="h-3 w-3 mr-2" />
+                            Add Rule to {v.name}
+                          </Button>
+                        </div>
                       </div>
                     )}
                   </div>
@@ -665,7 +821,7 @@ export default function QARulesPage() {
                 Custom Rules
               </h2>
             </div>
-            <Button variant="outline" size="sm" onClick={() => setAddingRule(true)}>
+            <Button variant="outline" size="sm" onClick={() => setAddingRule({ open: true })}>
               <Plus className="h-3 w-3 mr-2" />
               Add Rule
             </Button>
@@ -677,7 +833,7 @@ export default function QARulesPage() {
               <p className="text-sm text-zinc-500 mb-3">
                 Add custom rules specific to your business requirements.
               </p>
-              <Button variant="outline" size="sm" onClick={() => setAddingRule(true)}>
+              <Button variant="outline" size="sm" onClick={() => setAddingRule({ open: true })}>
                 <Plus className="h-3 w-3 mr-2" />
                 Add Your First Rule
               </Button>
@@ -735,8 +891,13 @@ export default function QARulesPage() {
         />
       )}
 
-      {addingRule && (
-        <AddRuleModal onSave={handleAddRule} onClose={() => setAddingRule(false)} />
+      {addingRule.open && (
+        <AddRuleModal
+          verticals={verticals}
+          initialVertical={addingRule.vertical}
+          onSave={handleAddRule}
+          onClose={() => setAddingRule({ open: false })}
+        />
       )}
     </div>
   );

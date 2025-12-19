@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
+import { createCoreClient } from "@/lib/supabase/server";
 import { getAuthContext, isAdmin } from "@/lib/supabase/auth";
 
 /**
@@ -35,7 +35,7 @@ export async function GET() {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const supabase = await createClient();
+  const supabase = await createCoreClient();
 
   // Get all rules: system rules (org_id IS NULL) + org-specific custom rules
   const { data: rules, error } = await supabase
@@ -93,7 +93,7 @@ export async function PATCH(request: NextRequest) {
     return NextResponse.json({ error: "Forbidden: admin access required" }, { status: 403 });
   }
 
-  const supabase = await createClient();
+  const supabase = await createCoreClient();
   const body = await request.json();
   const { id, enabled, severity, prompt_fragment, name, description } = body;
 
@@ -163,9 +163,12 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Forbidden: admin access required" }, { status: 403 });
   }
 
-  const supabase = await createClient();
+  const supabase = await createCoreClient();
   const body = await request.json();
-  const { name, description, severity, prompt_fragment, rule_type, rule_config } = body;
+  const { name, description, severity, prompt_fragment, rule_type, rule_config, scope, vertical } = body;
+
+  // Debug logging
+  console.log("[QA Rules POST] Received:", { name, scope, vertical, severity });
 
   if (!name || !prompt_fragment) {
     return NextResponse.json(
@@ -174,8 +177,23 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  // Validate scope
+  const validScope = ["global", "vertical", "custom"].includes(scope) ? scope : "custom";
+  console.log("[QA Rules POST] Validated scope:", validScope, "vertical:", vertical);
+
+  // Vertical is required if scope is "vertical"
+  if (validScope === "vertical" && !vertical) {
+    return NextResponse.json(
+      { error: "Vertical is required for vertical-scoped rules" },
+      { status: 400 }
+    );
+  }
+
   // Generate slug from name
   const slug = `custom_${name.toLowerCase().replace(/[^a-z0-9]+/g, "_")}_${Date.now()}`;
+
+  // Display order: global=10, vertical=50, custom=100
+  const displayOrder = validScope === "global" ? 10 : validScope === "vertical" ? 50 : 100;
 
   const { data, error } = await supabase
     .from("qa_rules")
@@ -184,15 +202,15 @@ export async function POST(request: NextRequest) {
       slug,
       name,
       description: description || null,
-      scope: "custom",
-      vertical: null,
+      scope: validScope,
+      vertical: validScope === "vertical" ? vertical : null,
       enabled: true,
       severity: severity || "warning",
       prompt_fragment,
       rule_type: rule_type || null,
       rule_config: rule_config || null,
       is_system: false,
-      display_order: 100, // Custom rules appear last
+      display_order: displayOrder,
     })
     .select()
     .single();
@@ -222,7 +240,7 @@ export async function DELETE(request: NextRequest) {
     return NextResponse.json({ error: "Forbidden: admin access required" }, { status: 403 });
   }
 
-  const supabase = await createClient();
+  const supabase = await createCoreClient();
   const { searchParams } = new URL(request.url);
   const id = searchParams.get("id");
 

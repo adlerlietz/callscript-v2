@@ -117,9 +117,9 @@ class QAAnalysis(BaseModel):
 
 
 # =============================================================================
-# SYSTEM PROMPT
+# SYSTEM PROMPT (Base + Dynamic Rules)
 # =============================================================================
-SYSTEM_PROMPT = """You are a QA Compliance Officer for a Pay-Per-Call marketing operation.
+BASE_SYSTEM_PROMPT = """You are a QA Compliance Officer for a Pay-Per-Call marketing operation.
 
 Analyze the provided call transcript and evaluate it for:
 
@@ -144,8 +144,51 @@ Analyze the provided call transcript and evaluate it for:
 - Any PII was leaked
 - Any hostility/abuse detected
 - High or critical compliance risk
+- Any CRITICAL rule violation detected (see rules below)
+
+{dynamic_rules}
 
 Respond with a structured JSON analysis."""
+
+
+def build_system_prompt(rules: list[dict[str, Any]]) -> str:
+    """
+    Build system prompt with dynamic rules.
+
+    Args:
+        rules: List of QA rules from database
+
+    Returns:
+        Complete system prompt with rules injected
+    """
+    if not rules:
+        return BASE_SYSTEM_PROMPT.format(dynamic_rules="")
+
+    # Build rules section
+    rule_sections = []
+
+    # Group by severity for better organization
+    critical_rules = [r for r in rules if r.get("severity") == "critical"]
+    warning_rules = [r for r in rules if r.get("severity") == "warning"]
+
+    if critical_rules:
+        rule_sections.append("**CRITICAL RULES (Must Flag if Violated):**")
+        for r in critical_rules:
+            name = r.get("name", "Unnamed Rule")
+            prompt = r.get("prompt_fragment", "")
+            if prompt:
+                rule_sections.append(f"- **{name}**: {prompt}")
+
+    if warning_rules:
+        rule_sections.append("\n**WARNING RULES (Flag if Multiple Violations):**")
+        for r in warning_rules:
+            name = r.get("name", "Unnamed Rule")
+            prompt = r.get("prompt_fragment", "")
+            if prompt:
+                rule_sections.append(f"- **{name}**: {prompt}")
+
+    dynamic_rules = "\n".join(rule_sections)
+    return BASE_SYSTEM_PROMPT.format(dynamic_rules=dynamic_rules)
 
 
 # =============================================================================
@@ -171,6 +214,45 @@ class JudgeRepository:
         self.client = client
         self.schema = client.schema("core")
 
+    def fetch_qa_rules(self, vertical: Optional[str] = None) -> list[dict[str, Any]]:
+        """
+        Fetch applicable QA rules for a given vertical.
+
+        Returns:
+            - All enabled global rules (scope='global')
+            - All enabled rules for the specific vertical (scope='vertical', vertical=vertical)
+
+        Args:
+            vertical: The campaign vertical ID (e.g., 'medicare', 'solar')
+
+        Returns:
+            List of rule dicts with name, severity, prompt_fragment
+        """
+        try:
+            # Build query for global rules + vertical-specific rules
+            query = (
+                self.schema
+                .from_("qa_rules")
+                .select("id, name, slug, severity, prompt_fragment, scope, vertical")
+                .eq("enabled", True)
+            )
+
+            # Filter: global rules OR rules matching this vertical
+            if vertical:
+                query = query.or_(f"scope.eq.global,and(scope.eq.vertical,vertical.eq.{vertical})")
+            else:
+                query = query.eq("scope", "global")
+
+            response = query.order("display_order", desc=False).execute()
+
+            rules = response.data or []
+            logger.debug(f"Fetched {len(rules)} QA rules for vertical={vertical}")
+            return rules
+
+        except Exception as e:
+            logger.warning(f"Failed to fetch QA rules: {e} - using base prompt")
+            return []
+
     def fetch_and_lock_batch(self, limit: int = BATCH_SIZE) -> list[dict[str, Any]]:
         """
         Fetch and atomically lock a batch of transcribed calls for QA analysis.
@@ -182,16 +264,16 @@ class JudgeRepository:
             limit: Maximum calls to fetch
 
         Returns:
-            List of successfully locked call dicts
+            List of successfully locked call dicts (includes campaign vertical)
         """
         locked_calls = []
 
         try:
-            # Step 1: Fetch candidate calls
+            # Step 1: Fetch candidate calls with campaign vertical
             response = (
                 self.schema
                 .from_("calls")
-                .select("id, transcript_text, transcript_segments, start_time_utc, duration_seconds")
+                .select("id, transcript_text, transcript_segments, start_time_utc, duration_seconds, campaign_id, campaigns(vertical)")
                 .eq("status", "transcribed")
                 .is_("qa_flags", "null")  # postgrest-py uses "null" string for IS NULL
                 .order("start_time_utc", desc=True)
@@ -359,6 +441,7 @@ class JudgeRepository:
 def analyze_with_gpt(
     openai_client: OpenAI,
     transcript: str,
+    system_prompt: str,
 ) -> QAAnalysis:
     """
     Analyze transcript using OpenAI GPT-4o-mini with structured outputs.
@@ -371,6 +454,7 @@ def analyze_with_gpt(
     Args:
         openai_client: Configured OpenAI client
         transcript: Call transcript text
+        system_prompt: Dynamic system prompt with rules injected
 
     Returns:
         Parsed QAAnalysis object
@@ -381,7 +465,7 @@ def analyze_with_gpt(
     completion = openai_client.beta.chat.completions.parse(
         model=MODEL_NAME,
         messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": f"Analyze this call transcript:\n\n{transcript}"},
         ],
         response_format=QAAnalysis,
@@ -400,6 +484,36 @@ def analyze_with_gpt(
 # =============================================================================
 # CALL PROCESSING
 # =============================================================================
+# Thread-local cache for rules (keyed by vertical)
+_rules_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+RULES_CACHE_TTL = 60  # seconds
+
+
+def get_rules_cached(repo: JudgeRepository, vertical: Optional[str]) -> list[dict[str, Any]]:
+    """
+    Get QA rules with caching to avoid repeated DB calls.
+
+    Args:
+        repo: Judge repository
+        vertical: Campaign vertical ID
+
+    Returns:
+        List of applicable rules
+    """
+    cache_key = vertical or "_global_"
+    now = time.time()
+
+    if cache_key in _rules_cache:
+        cached_time, cached_rules = _rules_cache[cache_key]
+        if now - cached_time < RULES_CACHE_TTL:
+            return cached_rules
+
+    # Fetch fresh rules
+    rules = repo.fetch_qa_rules(vertical)
+    _rules_cache[cache_key] = (now, rules)
+    return rules
+
+
 def process_single_call(
     call: dict[str, Any],
     repo: JudgeRepository,
@@ -411,7 +525,7 @@ def process_single_call(
     Designed to be called from a thread pool.
 
     Args:
-        call: Call dict with id, transcript_text, etc.
+        call: Call dict with id, transcript_text, campaigns join, etc.
         repo: Judge repository
         openai_client: OpenAI client
 
@@ -420,6 +534,16 @@ def process_single_call(
     """
     call_id = call["id"]
     transcript = call.get("transcript_text") or ""
+
+    # Extract vertical from joined campaign data
+    campaign_data = call.get("campaigns")
+    vertical = None
+    if campaign_data:
+        # Supabase returns nested object or None
+        if isinstance(campaign_data, dict):
+            vertical = campaign_data.get("vertical")
+        elif isinstance(campaign_data, list) and campaign_data:
+            vertical = campaign_data[0].get("vertical")
 
     # Cost control: Skip very short transcripts
     if len(transcript.strip()) < MIN_TRANSCRIPT_LENGTH:
@@ -431,8 +555,20 @@ def process_single_call(
         return (call_id, True, "skipped")
 
     try:
+        # Fetch applicable rules (cached)
+        rules = get_rules_cached(repo, vertical)
+
+        # Build dynamic prompt with rules
+        system_prompt = build_system_prompt(rules)
+
+        # Log rules being applied (INFO level for visibility)
+        if vertical and rules:
+            vertical_rules = [r for r in rules if r.get("scope") == "vertical"]
+            if vertical_rules:
+                logger.info(f"Call {call_id[:8]}... vertical={vertical}, applying {len(vertical_rules)} vertical-specific rules")
+
         # Analyze with GPT-4o-mini
-        analysis = analyze_with_gpt(openai_client, transcript)
+        analysis = analyze_with_gpt(openai_client, transcript, system_prompt)
 
         # Save results
         repo.save_qa_results(call_id, analysis)
@@ -541,6 +677,18 @@ def main():
     stats = repo.get_queue_stats()
     logger.info(f"Queue: transcribed={stats.get('transcribed', 0)}, flagged={stats.get('flagged', 0)}, safe={stats.get('safe', 0)}")
     logger.info(f"Config: batch={BATCH_SIZE}, threads={MAX_WORKERS}, model={MODEL_NAME}")
+
+    # Test rule loading
+    try:
+        global_rules = repo.fetch_qa_rules(None)
+        logger.info(f"Loaded {len(global_rules)} global QA rules from database")
+        for r in global_rules[:3]:  # Show first 3
+            logger.info(f"  - {r.get('name')} ({r.get('severity')})")
+        if len(global_rules) > 3:
+            logger.info(f"  ... and {len(global_rules) - 3} more")
+    except Exception as e:
+        logger.warning(f"Could not load QA rules: {e}")
+
     logger.info("=" * 60)
 
     # Main loop

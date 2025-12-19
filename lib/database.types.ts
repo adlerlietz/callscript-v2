@@ -52,6 +52,17 @@ export interface Call {
   qa_flags: QaFlags | null;
   qa_version: string | null;
   judge_model: string | null;
+  // Analytics columns (Phase 1)
+  publisher_id: string | null;
+  publisher_sub_id: string | null;
+  publisher_name: string | null;
+  buyer_name: string | null;
+  target_id: string | null;
+  target_name: string | null;
+  payout: number | null;
+  caller_state: string | null;
+  caller_city: string | null;
+  profit: number | null;
 }
 
 export interface Campaign {

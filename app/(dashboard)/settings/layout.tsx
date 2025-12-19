@@ -2,13 +2,14 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Building2, Link2, ShieldCheck, Tags } from "lucide-react";
+import { Building2, Link2, ShieldCheck, Tags, Layers } from "lucide-react";
 
 const navItems = [
   { href: "/settings/general", label: "General", icon: Building2 },
   { href: "/settings/connections", label: "Connections", icon: Link2 },
   { href: "/settings/qa-rules", label: "QA Rules", icon: ShieldCheck },
   { href: "/settings/campaigns", label: "Campaigns", icon: Tags },
+  { href: "/settings/verticals", label: "Verticals", icon: Layers },
 ];
 
 export default function SettingsLayout({

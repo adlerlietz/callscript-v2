@@ -10,6 +10,7 @@ import {
   Activity,
   LogOut,
   Loader2,
+  Sparkles,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { createClient } from "@/lib/supabase/client";
@@ -17,6 +18,7 @@ import { useState } from "react";
 
 const navigation = [
   { name: "Command Center", href: "/dashboard", icon: LayoutDashboard },
+  { name: "AI Explore", href: "/explore", icon: Sparkles },
   { name: "All Calls", href: "/calls", icon: Phone },
   { name: "Flagged", href: "/flags", icon: AlertTriangle },
   { name: "Settings", href: "/settings", icon: Settings },

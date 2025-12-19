@@ -54,10 +54,22 @@ export const leaderboardSchema = z.object({
     .enum(["publisher", "buyer", "campaign", "vertical", "state"])
     .describe("The dimension to group by (vertical = industry like ACA, Medicare, Solar)"),
   metric: z
-    .enum(["revenue", "profit", "calls", "flag_rate"])
-    .describe("The metric to rank by"),
+    .enum(["revenue", "profit", "calls", "flag_rate", "rpc"])
+    .describe("The metric to rank by. Use 'rpc' (Revenue Per Call) for quality/efficiency analysis."),
   start_date: z.string().describe("Start date in ISO format (YYYY-MM-DD)"),
   end_date: z.string().describe("End date in ISO format (YYYY-MM-DD)"),
+  vertical_filter: z
+    .string()
+    .optional()
+    .describe("Filter to a specific vertical (e.g., 'medicare', 'aca', 'solar'). Use this when asking about performance WITHIN a vertical."),
+  state_filter: z
+    .string()
+    .optional()
+    .describe("Filter to a specific state (e.g., 'CA', 'TX'). Use this when asking about performance WITHIN a state."),
+  min_calls: z
+    .number()
+    .optional()
+    .describe("Minimum calls required for RPC metric (default 10). Prevents misleading single-call outliers."),
 });
 
 // Tool descriptions for the AI
@@ -67,7 +79,7 @@ export const toolDescriptions = {
   get_trend_data:
     "Get time-series trend data for a metric (revenue, profit, calls, flag_rate, rpc). Returns up to 90 data points for charting.",
   get_leaderboard:
-    "Get top performers ranked by a metric (revenue, profit, calls, flag_rate). Can group by publisher, buyer, campaign, vertical (industry), or state. Returns top 25.",
+    "Get top performers ranked by a metric (revenue, profit, calls, flag_rate, rpc). Can group by publisher, buyer, campaign, vertical (industry), or state. Use vertical_filter to analyze WITHIN a vertical (e.g., 'best states for Medicare' = dimension:state, metric:rpc, vertical_filter:'medicare'). Returns top 25.",
 };
 
 /**
@@ -183,6 +195,9 @@ export async function executeLeaderboard(
       p_metric: params.metric,
       p_start_date: params.start_date,
       p_end_date: params.end_date,
+      p_vertical_filter: params.vertical_filter || null,
+      p_state_filter: params.state_filter || null,
+      p_min_calls: params.min_calls || 10,
     });
 
     if (error) {
@@ -196,11 +211,27 @@ export async function executeLeaderboard(
 
     console.log("executeLeaderboard: Success, entries:", data?.length || 0);
 
+    // Build data notes for transparency
+    const notes: string[] = [];
+
     // Add accuracy disclosure for state-based queries
-    const dataNote =
-      params.dimension === "state"
-        ? "State data is inferred from phone area codes (~95% accurate for landlines, ~80% for mobile phones where owners may have moved states)."
-        : undefined;
+    if (params.dimension === "state") {
+      notes.push("State data is inferred from phone area codes (~95% accurate for landlines, ~80% for mobile).");
+    }
+
+    // Add RPC minimum calls note
+    if (params.metric === "rpc") {
+      const minCalls = params.min_calls || 10;
+      notes.push(`RPC requires minimum ${minCalls} calls to avoid single-call outliers.`);
+    }
+
+    // Add filter context
+    if (params.vertical_filter) {
+      notes.push(`Filtered to vertical: ${params.vertical_filter}`);
+    }
+    if (params.state_filter) {
+      notes.push(`Filtered to state: ${params.state_filter}`);
+    }
 
     return {
       success: true,
@@ -211,7 +242,12 @@ export async function executeLeaderboard(
       entries: data?.length || 0,
       max_entries: 25,
       truncated: (data?.length || 0) >= 25,
-      data_note: dataNote,
+      filters_applied: {
+        vertical: params.vertical_filter || null,
+        state: params.state_filter || null,
+        min_calls: params.metric === "rpc" ? (params.min_calls || 10) : null,
+      },
+      data_notes: notes.length > 0 ? notes : undefined,
       _meta: {
         query: params,
         tool: "get_leaderboard",

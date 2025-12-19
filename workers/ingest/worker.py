@@ -98,6 +98,8 @@ RINGBA_COLUMNS = [
 # =============================================================================
 shutdown_requested = False
 logger: logging.Logger
+# Area code to state mapping (loaded once from database)
+AREA_CODE_MAP: dict[str, str] = {}
 
 
 def signal_handler(sig, frame):
@@ -105,6 +107,61 @@ def signal_handler(sig, frame):
     global shutdown_requested
     shutdown_requested = True
     logger.info("Shutdown signal received, finishing current sync...")
+
+
+def load_area_codes(client) -> dict[str, str]:
+    """
+    Load area code to state mapping from database.
+
+    Args:
+        client: Supabase client
+
+    Returns:
+        Dict mapping area code (str) to state abbreviation (str)
+    """
+    try:
+        response = client.schema("core").from_("area_code_states").select("area_code, state").execute()
+        if response.data:
+            return {row["area_code"]: row["state"] for row in response.data}
+    except Exception as e:
+        logger.warning(f"Failed to load area codes (table may not exist yet): {e}")
+    return {}
+
+
+def get_state_from_phone(phone_number: Optional[str]) -> Optional[str]:
+    """
+    Extract US state from phone number using area code lookup.
+
+    Handles formats: +1XXXXXXXXXX, 1XXXXXXXXXX, XXXXXXXXXX, (XXX) XXX-XXXX
+
+    Args:
+        phone_number: Caller phone number in any format
+
+    Returns:
+        Two-letter state abbreviation or None if not found
+    """
+    global AREA_CODE_MAP
+
+    if not phone_number or not AREA_CODE_MAP:
+        return None
+
+    # Remove all non-digits
+    import re
+    digits = re.sub(r'[^0-9]', '', phone_number)
+
+    # Extract area code based on format
+    area_code = None
+    if len(digits) == 11 and digits.startswith('1'):
+        # +1XXXXXXXXXX or 1XXXXXXXXXX
+        area_code = digits[1:4]
+    elif len(digits) == 10:
+        # XXXXXXXXXX
+        area_code = digits[0:3]
+
+    if area_code:
+        return AREA_CODE_MAP.get(area_code)
+
+    return None
 
 
 # =============================================================================
@@ -642,8 +699,12 @@ def map_ringba_to_call(
         "buyer_name": record.get("buyer"),
         "target_id": record.get("targetId"),
         "target_name": record.get("targetName"),
-        # Geographic (try multiple field names)
-        "caller_state": record.get("state") or record.get("callerState"),
+        # Geographic (try Ringba fields first, then area code lookup as fallback)
+        "caller_state": (
+            record.get("state")
+            or record.get("callerState")
+            or get_state_from_phone(record.get("inboundPhoneNumber"))
+        ),
         "caller_city": record.get("city") or record.get("callerCity"),
         # Operational metrics (Phase 3 - AI Root Cause Analysis)
         "end_call_source": end_call_source,
@@ -951,6 +1012,14 @@ def main():
     except Exception as e:
         logger.critical(f"Failed to connect to Supabase: {e}")
         sys.exit(1)
+
+    # Load area code to state mapping for geo-lookup
+    global AREA_CODE_MAP
+    AREA_CODE_MAP = load_area_codes(client)
+    if AREA_CODE_MAP:
+        logger.info(f"Loaded {len(AREA_CODE_MAP)} area codes for geo-lookup")
+    else:
+        logger.warning("Area code lookup disabled (table may not exist yet)")
 
     # ==========================================================================
     # MULTI-ORG MODE

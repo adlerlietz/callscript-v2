@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { createCoreClient } from "@/lib/supabase/server";
+import { createClient } from "@supabase/supabase-js";
 
 /**
  * AI Explore Platform - Tool Definitions
@@ -7,6 +7,14 @@ import { createCoreClient } from "@/lib/supabase/server";
  * These tools are invoked by the AI to query call analytics data.
  * All queries are filtered by org_id for multi-tenant security.
  */
+
+// Create a simple Supabase client for AI tools (service role, no cookies)
+function getAIClient() {
+  return createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!
+  );
+}
 
 // Response types for type safety
 export interface KPISummaryResponse {
@@ -91,9 +99,8 @@ export async function executeKpiSummary(
 ) {
   try {
     console.log("executeKpiSummary: Starting with orgId:", orgId, "params:", params);
-    const supabase = await createCoreClient();
+    const supabase = getAIClient();
 
-    // Explicitly use core schema for RPC calls
     const { data, error } = await supabase.schema("core").rpc("get_kpi_summary", {
       p_org_id: orgId,
       p_start_date: params.start_date,
@@ -136,9 +143,8 @@ export async function executeTrendData(
 ) {
   try {
     console.log("executeTrendData: Starting with orgId:", orgId, "params:", params);
-    const supabase = await createCoreClient();
+    const supabase = getAIClient();
 
-    // Explicitly use core schema for RPC calls
     const { data, error } = await supabase.schema("core").rpc("get_trend_data", {
       p_org_id: orgId,
       p_metric: params.metric,
@@ -189,9 +195,8 @@ export async function executeLeaderboard(
 ) {
   try {
     console.log("executeLeaderboard: Starting with orgId:", orgId, "params:", params);
-    const supabase = await createCoreClient();
+    const supabase = getAIClient();
 
-    // Explicitly use core schema for RPC calls
     const { data, error } = await supabase.schema("core").rpc("get_leaderboard", {
       p_org_id: orgId,
       p_dimension: params.dimension,

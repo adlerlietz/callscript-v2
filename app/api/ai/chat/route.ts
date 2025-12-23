@@ -33,6 +33,32 @@ export const runtime = "nodejs";
 export const maxDuration = 60;
 
 /**
+ * Factory function to create tool handlers with consistent logging and error handling
+ */
+function createToolHandler<TSchema extends z.ZodType>(
+  toolName: string,
+  schema: TSchema,
+  executor: (orgId: string, params: z.infer<TSchema>) => Promise<unknown>,
+  orgId: string
+) {
+  return {
+    description: toolDescriptions[toolName as keyof typeof toolDescriptions],
+    inputSchema: schema,
+    execute: async (params: z.infer<TSchema>) => {
+      console.log(`AI Chat: Executing ${toolName}`);
+      try {
+        const result = await executor(orgId, params);
+        console.log(`AI Chat: ${toolName} completed`);
+        return result;
+      } catch (e) {
+        console.error(`AI Chat: ${toolName} error:`, e);
+        return { error: true, message: String(e) };
+      }
+    },
+  };
+}
+
+/**
  * POST /api/ai/chat
  * Streaming AI chat endpoint for the Explore platform.
  * Uses OpenAI GPT-4o with function calling for data queries.
@@ -64,133 +90,20 @@ export async function POST(req: NextRequest) {
     // Build dynamic system prompt with current date
     const systemPrompt = buildSystemPrompt();
 
-    // Stream response with tool calling via OpenRouter
-    // Use .chat() method for OpenRouter compatibility (not .responses())
+    // Stream response with tool calling
     const result = streamText({
       model: openai("gpt-4o"),
       system: systemPrompt,
       messages,
       tools: {
-        get_kpi_summary: {
-          description: toolDescriptions.get_kpi_summary,
-          inputSchema: kpiSummarySchema,
-          execute: async (params: z.infer<typeof kpiSummarySchema>) => {
-            console.log("AI Chat: Executing get_kpi_summary with params:", params);
-            try {
-              const result = await executeKpiSummary(orgId, params);
-              console.log("AI Chat: get_kpi_summary result:", JSON.stringify(result).substring(0, 200));
-              return result;
-            } catch (e) {
-              console.error("AI Chat: get_kpi_summary error:", e);
-              return { error: true, message: String(e) };
-            }
-          },
-        },
-        get_trend_data: {
-          description: toolDescriptions.get_trend_data,
-          inputSchema: trendDataSchema,
-          execute: async (params: z.infer<typeof trendDataSchema>) => {
-            console.log("AI Chat: Executing get_trend_data with params:", params);
-            try {
-              const result = await executeTrendData(orgId, params);
-              console.log("AI Chat: get_trend_data result:", JSON.stringify(result).substring(0, 200));
-              return result;
-            } catch (e) {
-              console.error("AI Chat: get_trend_data error:", e);
-              return { error: true, message: String(e) };
-            }
-          },
-        },
-        get_leaderboard: {
-          description: toolDescriptions.get_leaderboard,
-          inputSchema: leaderboardSchema,
-          execute: async (params: z.infer<typeof leaderboardSchema>) => {
-            console.log("AI Chat: Executing get_leaderboard with params:", params);
-            try {
-              const result = await executeLeaderboard(orgId, params);
-              console.log("AI Chat: get_leaderboard result:", JSON.stringify(result).substring(0, 200));
-              return result;
-            } catch (e) {
-              console.error("AI Chat: get_leaderboard error:", e);
-              return { error: true, message: String(e) };
-            }
-          },
-        },
-        analyze_breakdown: {
-          description: toolDescriptions.analyze_breakdown,
-          inputSchema: breakdownAnalysisSchema,
-          execute: async (params: z.infer<typeof breakdownAnalysisSchema>) => {
-            console.log("AI Chat: Executing analyze_breakdown with params:", params);
-            try {
-              const result = await executeBreakdownAnalysis(orgId, params);
-              console.log("AI Chat: analyze_breakdown result:", JSON.stringify(result).substring(0, 200));
-              return result;
-            } catch (e) {
-              console.error("AI Chat: analyze_breakdown error:", e);
-              return { error: true, message: String(e) };
-            }
-          },
-        },
-        generate_forecast: {
-          description: toolDescriptions.generate_forecast,
-          inputSchema: forecastSchema,
-          execute: async (params: z.infer<typeof forecastSchema>) => {
-            console.log("AI Chat: Executing generate_forecast with params:", params);
-            try {
-              const result = await executeForecast(orgId, params);
-              console.log("AI Chat: generate_forecast result:", JSON.stringify(result).substring(0, 200));
-              return result;
-            } catch (e) {
-              console.error("AI Chat: generate_forecast error:", e);
-              return { error: true, message: String(e) };
-            }
-          },
-        },
-        analyze_negotiation_opportunities: {
-          description: toolDescriptions.analyze_negotiation_opportunities,
-          inputSchema: negotiationSchema,
-          execute: async (params: z.infer<typeof negotiationSchema>) => {
-            console.log("AI Chat: Executing analyze_negotiation_opportunities with params:", params);
-            try {
-              const result = await executeNegotiationAnalysis(orgId, params);
-              console.log("AI Chat: analyze_negotiation_opportunities result:", JSON.stringify(result).substring(0, 200));
-              return result;
-            } catch (e) {
-              console.error("AI Chat: analyze_negotiation_opportunities error:", e);
-              return { error: true, message: String(e) };
-            }
-          },
-        },
-        simulate_financial_change: {
-          description: toolDescriptions.simulate_financial_change,
-          inputSchema: simulationSchema,
-          execute: async (params: z.infer<typeof simulationSchema>) => {
-            console.log("AI Chat: Executing simulate_financial_change with params:", params);
-            try {
-              const result = await executeSimulation(orgId, params);
-              console.log("AI Chat: simulate_financial_change result:", JSON.stringify(result).substring(0, 200));
-              return result;
-            } catch (e) {
-              console.error("AI Chat: simulate_financial_change error:", e);
-              return { error: true, message: String(e) };
-            }
-          },
-        },
-        get_call_samples: {
-          description: toolDescriptions.get_call_samples,
-          inputSchema: callSamplesSchema,
-          execute: async (params: z.infer<typeof callSamplesSchema>) => {
-            console.log("AI Chat: Executing get_call_samples with params:", params);
-            try {
-              const result = await executeCallSamples(orgId, params);
-              console.log("AI Chat: get_call_samples result:", JSON.stringify(result).substring(0, 200));
-              return result;
-            } catch (e) {
-              console.error("AI Chat: get_call_samples error:", e);
-              return { error: true, message: String(e) };
-            }
-          },
-        },
+        get_kpi_summary: createToolHandler("get_kpi_summary", kpiSummarySchema, executeKpiSummary, orgId),
+        get_trend_data: createToolHandler("get_trend_data", trendDataSchema, executeTrendData, orgId),
+        get_leaderboard: createToolHandler("get_leaderboard", leaderboardSchema, executeLeaderboard, orgId),
+        analyze_breakdown: createToolHandler("analyze_breakdown", breakdownAnalysisSchema, executeBreakdownAnalysis, orgId),
+        generate_forecast: createToolHandler("generate_forecast", forecastSchema, executeForecast, orgId),
+        analyze_negotiation_opportunities: createToolHandler("analyze_negotiation_opportunities", negotiationSchema, executeNegotiationAnalysis, orgId),
+        simulate_financial_change: createToolHandler("simulate_financial_change", simulationSchema, executeSimulation, orgId),
+        get_call_samples: createToolHandler("get_call_samples", callSamplesSchema, executeCallSamples, orgId),
       },
       temperature: 0.1,
       // Enable multi-step tool calling (AI SDK v5)
@@ -209,7 +122,6 @@ export async function POST(req: NextRequest) {
     console.log("AI Chat: Streaming response...");
 
     // Use UI Message stream for proper tool calling support
-    // toTextStreamResponse() doesn't include text after tool execution
     return result.toUIMessageStreamResponse();
   } catch (error) {
     console.error("AI Chat Error:", error);

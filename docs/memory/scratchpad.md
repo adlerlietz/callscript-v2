@@ -31,7 +31,7 @@
 
 ### Current State
 - **Production:** https://callscript.io (Vercel)
-- **Worker Server:** 213.192.2.124 port 40040 (RunPod)
+- **Worker Server:** See .env WORKER_HOST (RunPod)
 - **Database:** Supabase (migrations up to 58)
 
 ### AI Tools Available

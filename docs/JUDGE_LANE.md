@@ -226,7 +226,7 @@ ORDER BY start_time_utc DESC;
 
 1. **Check if transcription workers are running:**
    ```bash
-   ssh root@213.192.2.124 -p 40040 -i ~/.ssh/id_ed25519 "ps aux | grep worker.py"
+   ssh root@$WORKER_HOST -p $WORKER_PORT -i ~/.ssh/id_ed25519 "ps aux | grep worker.py"
    ```
 
 2. **Check if calls have transcripts:**
@@ -236,7 +236,7 @@ ORDER BY start_time_utc DESC;
 
 3. **Restart judge worker:**
    ```bash
-   ssh root@213.192.2.124 -p 40040 -i ~/.ssh/id_ed25519 "/workspace/start_judge.sh"
+   ssh root@$WORKER_HOST -p $WORKER_PORT -i ~/.ssh/id_ed25519 "/workspace/start_judge.sh"
    ```
 
 ### OpenAI API Errors

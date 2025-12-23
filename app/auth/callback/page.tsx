@@ -112,6 +112,13 @@ export default function AuthCallbackPage() {
         }
 
         console.log("[Auth Callback] Token verified");
+
+        // Accept invite membership (sets accepted_at in organization_members)
+        if (type === "invite") {
+          console.log("[Auth Callback] Accepting invite...");
+          await fetch("/api/auth/accept-invite", { method: "POST" });
+        }
+
         await checkPasswordAndRedirect(type);
         return;
       }

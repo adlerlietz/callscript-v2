@@ -13,6 +13,7 @@ function LoginForm() {
   const [password, setPassword] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [isMagicLinkLoading, setIsMagicLinkLoading] = useState(false);
+  const [isResetLoading, setIsResetLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const router = useRouter();
@@ -29,7 +30,7 @@ function LoginForm() {
 
     const supabase = createClient();
 
-    const { error } = await supabase.auth.signInWithPassword({
+    const { data, error } = await supabase.auth.signInWithPassword({
       email,
       password,
     });
@@ -38,6 +39,13 @@ function LoginForm() {
       setError(error.message);
       setIsLoading(false);
       return;
+    }
+
+    // Set password_set flag if not already set (for existing users)
+    if (data.user && !data.user.user_metadata?.password_set) {
+      await supabase.auth.updateUser({
+        data: { password_set: true },
+      });
     }
 
     router.push("/dashboard");
@@ -69,8 +77,34 @@ function LoginForm() {
       return;
     }
 
-    setSuccess("Check your email for the login link!");
+    setSuccess("Check your email for the login link! Important: Open the link in THIS browser.");
     setIsMagicLinkLoading(false);
+  };
+
+  const handlePasswordReset = async () => {
+    if (!email) {
+      setError("Please enter your email address");
+      return;
+    }
+
+    setIsResetLoading(true);
+    setError(null);
+    setSuccess(null);
+
+    const supabase = createClient();
+
+    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: `${window.location.origin}/auth/callback`,
+    });
+
+    if (error) {
+      setError(error.message);
+      setIsResetLoading(false);
+      return;
+    }
+
+    setSuccess("Check your email for the password reset link!");
+    setIsResetLoading(false);
   };
 
   return (
@@ -103,12 +137,22 @@ function LoginForm() {
           </div>
 
           <div>
-            <label
-              htmlFor="password"
-              className="block text-sm font-medium text-zinc-400 mb-2"
-            >
-              Password
-            </label>
+            <div className="flex items-center justify-between mb-2">
+              <label
+                htmlFor="password"
+                className="block text-sm font-medium text-zinc-400"
+              >
+                Password
+              </label>
+              <button
+                type="button"
+                onClick={handlePasswordReset}
+                disabled={isResetLoading}
+                className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors"
+              >
+                {isResetLoading ? "Sending..." : "Forgot password?"}
+              </button>
+            </div>
             <Input
               id="password"
               type="password"

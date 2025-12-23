@@ -1,74 +1,60 @@
 # CallScript V2 – Active Task Scratchpad
 
-## Last Session Summary (Dec 18, 2025)
+## Last Session Summary (Dec 19, 2025)
 
 ### Completed
-- **Phase 4: AI Explore Platform - COMPLETE**
-  - Created `/explore` page with AI chat interface ("CallScript AI Analyst")
-  - Built streaming chat with OpenRouter + GPT-4o integration
-  - Custom streaming implementation (AI SDK v5 breaking changes required this)
-  - Implemented 3 tool functions with org_id security:
-    - `get_kpi_summary` - Aggregate metrics (revenue, profit, margin, flag rate, RPC)
-    - `get_trend_data` - Time-series charts (max 90 data points)
-    - `get_leaderboard` - Top performers by dimension (max 25 entries)
-  - Added AI navigation link to sidebar
-  - Charts render via Recharts (LineChart, BarChart)
-  - Loading skeletons during tool execution
+- **Phase 8: AI Scenario Simulator - COMPLETE**
+  - Created `simulate_financial_change` tool for "What If" analysis
+  - Enables questions like "What if I cut Publisher X's payout by $5?"
+  - Created migration `58_ai_simulation_tool.sql` with `get_simulation_impact` RPC
+  - Added SimulationChart component with Before/After comparison
+  - Validates that publishers use `payout` changes, buyers use `revenue` changes
 
-- **Database Migration 48: AI Explore RPCs**
-  - Created `core.get_kpi_summary()` - JSON response with period metrics
-  - Created `core.get_trend_data()` - Table-returning function for trends
-  - Created `core.get_leaderboard()` - Table-returning function for rankings
-  - All functions use `SECURITY DEFINER` with strict `org_id` filtering
-  - Hard limits enforced (90 trend points, 25 leaderboard entries)
+- **Phase 7: AI Negotiation Engine - COMPLETE**
+  - Created `analyze_negotiation_opportunities` tool
+  - Identifies HIGH_MARGIN buyers (price increase opportunity)
+  - Identifies NEGATIVE_PROFIT publishers (cut payout or block)
+  - NegotiationChart with color-coded action tags
+
+- **Phase 6: AI Forecasting - COMPLETE**
+  - Created `generate_forecast` tool with linear regression
+  - Projects revenue, profit, calls into future
+  - ForecastChart with dual lines (solid actual, dashed forecast)
+
+- **Phase 5: AI Drill Down - COMPLETE**
+  - Created `analyze_breakdown` tool for "WHY" questions
+  - Breaks down entity performance by sub-entities
+
+- **Phase 4: AI Explore Platform - COMPLETE**
+  - Base platform with KPI, Trend, Leaderboard tools
+  - Streaming chat with GPT-4o
 
 ### Current State
 - **Production:** https://callscript.io (Vercel)
 - **Worker Server:** 213.192.2.124 port 40040 (RunPod)
-- **Database:** Supabase (migrations up to 48)
+- **Database:** Supabase (migrations up to 58)
 
-### Key Files Created This Session
+### AI Tools Available
+1. `get_kpi_summary` - Aggregate metrics for date range
+2. `get_trend_data` - Time-series charts
+3. `get_leaderboard` - Top performers by dimension
+4. `analyze_breakdown` - Drill down into WHY
+5. `generate_forecast` - Linear regression projections
+6. `analyze_negotiation_opportunities` - Partner leverage analysis
+7. `simulate_financial_change` - What-If financial simulations
+
+### Key Files Modified This Session
 ```
-supabase/migrations/48_ai_explore_rpcs.sql  - RPC functions for AI tools
-lib/ai/prompts.ts                           - System prompts for GPT-4o
-lib/ai/tools.ts                             - Tool schemas and executors
-app/api/ai/chat/route.ts                    - Streaming chat endpoint (OpenRouter)
-app/(dashboard)/explore/page.tsx            - AI Explore page
-components/ai-chat.tsx                      - Chat UI (custom streaming)
-components/ai-chart.tsx                     - Chart renderer (KPI, Trend, Leaderboard)
-components/sidebar.tsx                      - Added "AI Explore" nav link
+supabase/migrations/58_ai_simulation_tool.sql  - RPC for simulation
+lib/ai/tools.ts                                - Added simulationSchema, executeSimulation
+app/api/ai/chat/route.ts                       - Registered simulate_financial_change
+lib/ai/prompts.ts                              - Added simulation tool docs
+components/ai-chart.tsx                        - Added SimulationChart component
 ```
-
-### Dependencies Added
-- `ai@5.0.115` - Vercel AI SDK
-- `@ai-sdk/openai@2.0.88` - OpenAI/OpenRouter provider
-- `@ai-sdk/react@2.0.117` - React hooks (not used, custom implementation)
-- `react-markdown` - For rendering AI responses
-- `zod` - Schema validation
-
-### Environment Variables Required
-```
-OPENAI_API_KEY=sk-or-v1-...  # OpenRouter API key (used with OpenRouter baseURL)
-```
-
-### Technical Note: AI SDK v5 Breaking Changes
-The AI SDK v5 has significant breaking changes:
-- `useChat` hook API changed (no `input`, `handleInputChange`)
-- Tool definitions use `inputSchema` instead of `parameters`
-- Use `toTextStreamResponse()` instead of `toDataStreamResponse()`
-- `maxSteps` not supported in streamText options
-
-Solution: Custom fetch-based streaming implementation in ai-chat.tsx
 
 ## Current Objective
 
 (No active task)
-
-## Plan
-
-- [ ] Step 1:
-- [ ] Step 2:
-- [ ] Step 3:
 
 ## Immediate Next Step
 

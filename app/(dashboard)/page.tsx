@@ -155,7 +155,7 @@ export default function DashboardPage() {
   };
 
   return (
-    <div className="p-8">
+    <div className="p-4 sm:p-6 lg:p-8">
       {/* Header */}
       <div className="mb-8 flex items-center justify-between">
         <div>
@@ -179,7 +179,7 @@ export default function DashboardPage() {
       </div>
 
       {/* KPI Grid */}
-      <div className="mb-8 grid grid-cols-4 gap-4">
+      <div className="mb-8 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <KPICard
           title="Volume"
           value={formatNumber(stats?.todayCalls ?? 0)}
@@ -214,9 +214,9 @@ export default function DashboardPage() {
       </div>
 
       {/* Main Content Grid */}
-      <div className="grid grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Chart */}
-        <div className="col-span-2 rounded-lg border border-zinc-800 bg-zinc-900 p-6">
+        <div className="lg:col-span-2 rounded-lg border border-zinc-800 bg-zinc-900 p-6">
           <div className="mb-4 flex items-center justify-between">
             <h2 className="text-sm font-medium text-zinc-400">Traffic Overview (7 days)</h2>
             <div className="flex items-center gap-4">

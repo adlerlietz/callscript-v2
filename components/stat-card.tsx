@@ -150,7 +150,7 @@ export function QueueStatus({ pending, downloaded, processing, transcribed, heal
       </div>
 
       {/* Legend */}
-      <div className="grid grid-cols-4 gap-2">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
         {segments.map((seg, i) => (
           <div key={i} className="text-center">
             <div className="text-lg font-bold text-zinc-100">{seg.count}</div>

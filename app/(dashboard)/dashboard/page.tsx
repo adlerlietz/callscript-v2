@@ -130,7 +130,7 @@ export default function DashboardPage() {
   }
 
   return (
-    <div className="p-8 bg-[#09090b] min-h-screen">
+    <div className="p-4 sm:p-6 lg:p-8 bg-[#09090b] min-h-screen">
       {/* Header */}
       <div className="mb-8 flex items-center justify-between">
         <div>
@@ -359,7 +359,7 @@ export default function DashboardPage() {
 
             {/* Health Metrics */}
             {health?.metrics && (
-              <div className="grid grid-cols-3 gap-4 pt-3 border-t border-zinc-800">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-3 border-t border-zinc-800">
                 <div className="flex items-center gap-2">
                   <Zap className="h-4 w-4 text-emerald-400" />
                   <div>

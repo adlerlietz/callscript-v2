@@ -161,6 +161,9 @@ export async function POST(request: NextRequest) {
   }
 
   // Create invite for new user via magic link
+  console.log("[Invite] Attempting to invite:", email.toLowerCase());
+  console.log("[Invite] redirectTo:", `${process.env.NEXT_PUBLIC_SITE_URL || "https://callscript.io"}/auth/callback`);
+
   const { data: inviteData, error: inviteError } = await supabase.auth.admin.inviteUserByEmail(
     email.toLowerCase(),
     {
@@ -173,12 +176,23 @@ export async function POST(request: NextRequest) {
     }
   );
 
+  console.log("[Invite] Response data:", JSON.stringify(inviteData, null, 2));
+  console.log("[Invite] Response error:", inviteError);
+
   if (inviteError) {
     console.error("Failed to send invite:", inviteError);
     return NextResponse.json({
       error: "Failed to send invite",
       details: inviteError.message,
       code: inviteError.code || inviteError.status,
+    }, { status: 500 });
+  }
+
+  if (!inviteData?.user) {
+    console.error("[Invite] No user returned from inviteUserByEmail");
+    return NextResponse.json({
+      error: "Invite created but no user returned",
+      details: "Supabase returned empty user data",
     }, { status: 500 });
   }
 

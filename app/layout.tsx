@@ -6,6 +6,12 @@ export const metadata: Metadata = {
   description: "Automated Pay-Per-Call QA Platform",
 };
 
+export const viewport = {
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 1,
+};
+
 export default function RootLayout({
   children,
 }: {

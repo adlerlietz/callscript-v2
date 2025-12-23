@@ -7,10 +7,20 @@ import {
   kpiSummarySchema,
   trendDataSchema,
   leaderboardSchema,
+  breakdownAnalysisSchema,
+  forecastSchema,
+  negotiationSchema,
+  simulationSchema,
+  callSamplesSchema,
   toolDescriptions,
   executeKpiSummary,
   executeTrendData,
   executeLeaderboard,
+  executeBreakdownAnalysis,
+  executeForecast,
+  executeNegotiationAnalysis,
+  executeSimulation,
+  executeCallSamples,
 } from "@/lib/ai/tools";
 import { buildSystemPrompt } from "@/lib/ai/prompts";
 
@@ -102,6 +112,81 @@ export async function POST(req: NextRequest) {
               return result;
             } catch (e) {
               console.error("AI Chat: get_leaderboard error:", e);
+              return { error: true, message: String(e) };
+            }
+          },
+        },
+        analyze_breakdown: {
+          description: toolDescriptions.analyze_breakdown,
+          inputSchema: breakdownAnalysisSchema,
+          execute: async (params: z.infer<typeof breakdownAnalysisSchema>) => {
+            console.log("AI Chat: Executing analyze_breakdown with params:", params);
+            try {
+              const result = await executeBreakdownAnalysis(orgId, params);
+              console.log("AI Chat: analyze_breakdown result:", JSON.stringify(result).substring(0, 200));
+              return result;
+            } catch (e) {
+              console.error("AI Chat: analyze_breakdown error:", e);
+              return { error: true, message: String(e) };
+            }
+          },
+        },
+        generate_forecast: {
+          description: toolDescriptions.generate_forecast,
+          inputSchema: forecastSchema,
+          execute: async (params: z.infer<typeof forecastSchema>) => {
+            console.log("AI Chat: Executing generate_forecast with params:", params);
+            try {
+              const result = await executeForecast(orgId, params);
+              console.log("AI Chat: generate_forecast result:", JSON.stringify(result).substring(0, 200));
+              return result;
+            } catch (e) {
+              console.error("AI Chat: generate_forecast error:", e);
+              return { error: true, message: String(e) };
+            }
+          },
+        },
+        analyze_negotiation_opportunities: {
+          description: toolDescriptions.analyze_negotiation_opportunities,
+          inputSchema: negotiationSchema,
+          execute: async (params: z.infer<typeof negotiationSchema>) => {
+            console.log("AI Chat: Executing analyze_negotiation_opportunities with params:", params);
+            try {
+              const result = await executeNegotiationAnalysis(orgId, params);
+              console.log("AI Chat: analyze_negotiation_opportunities result:", JSON.stringify(result).substring(0, 200));
+              return result;
+            } catch (e) {
+              console.error("AI Chat: analyze_negotiation_opportunities error:", e);
+              return { error: true, message: String(e) };
+            }
+          },
+        },
+        simulate_financial_change: {
+          description: toolDescriptions.simulate_financial_change,
+          inputSchema: simulationSchema,
+          execute: async (params: z.infer<typeof simulationSchema>) => {
+            console.log("AI Chat: Executing simulate_financial_change with params:", params);
+            try {
+              const result = await executeSimulation(orgId, params);
+              console.log("AI Chat: simulate_financial_change result:", JSON.stringify(result).substring(0, 200));
+              return result;
+            } catch (e) {
+              console.error("AI Chat: simulate_financial_change error:", e);
+              return { error: true, message: String(e) };
+            }
+          },
+        },
+        get_call_samples: {
+          description: toolDescriptions.get_call_samples,
+          inputSchema: callSamplesSchema,
+          execute: async (params: z.infer<typeof callSamplesSchema>) => {
+            console.log("AI Chat: Executing get_call_samples with params:", params);
+            try {
+              const result = await executeCallSamples(orgId, params);
+              console.log("AI Chat: get_call_samples result:", JSON.stringify(result).substring(0, 200));
+              return result;
+            } catch (e) {
+              console.error("AI Chat: get_call_samples error:", e);
               return { error: true, message: String(e) };
             }
           },

@@ -377,7 +377,7 @@ export function CallInspector({
         </div>
 
         {/* Metadata */}
-        <div className="py-6 border-b border-zinc-800 grid grid-cols-3 gap-4">
+        <div className="py-6 border-b border-zinc-800 grid grid-cols-1 sm:grid-cols-3 gap-4">
           <div>
             <div className="flex items-center gap-2 text-zinc-500 mb-1">
               <Clock className="h-3 w-3" />

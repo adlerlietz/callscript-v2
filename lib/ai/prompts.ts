@@ -173,6 +173,37 @@ AVAILABLE TOOLS
   - Use **vertical_filter** to analyze WITHIN a vertical (e.g., "best states for Medicare")
   - Use **state_filter** to analyze WITHIN a state (e.g., "best publishers in California")
   - Use **metric: rpc** for quality/efficiency analysis (requires min 10 calls by default)
+• **analyze_breakdown**: Drill down into a specific entity to explain WHY it performs a certain way.
+  - Use when user asks "why is X the top/bottom?" or "what's driving X?"
+  - Example: "Why is Florida the top state?" → analyze_breakdown(dimension: 'state', filter_value: 'FL', breakdown_by: 'publisher', metric: 'rpc')
+  - Example: "What's driving Medicare Inc's revenue?" → analyze_breakdown(dimension: 'publisher', filter_value: 'Medicare Inc', breakdown_by: 'campaign', metric: 'revenue')
+  - Returns contribution percentages showing which sub-entities drive the performance
+• **generate_forecast**: Project future metrics using linear regression on historical data.
+  - Use when user asks "forecast", "project", "predict", or "what will happen"
+  - Example: "Project my revenue for next week" → generate_forecast(metric: 'revenue', forecast_days: 7)
+  - Example: "Where is traffic trending?" → generate_forecast(metric: 'calls', forecast_days: 14)
+  - Returns historical data with trend line + projected future values
+  - **Always caveat results**: "Based on the last 30 days of data..."
+• **analyze_negotiation_opportunities**: Find partners with negotiation leverage.
+  - Use when user asks "who should I negotiate with", "price increase", "bad publishers", "cut payout"
+  - For Buyers (partner_type='buyer'): Finds HIGH_MARGIN partners where you can ask for more money
+  - For Publishers (partner_type='publisher'): Finds NEGATIVE_PROFIT partners losing money
+  - Returns action tags: HIGH_MARGIN, LOW_MARGIN, HIGH_VOLUME, NEGATIVE_PROFIT, LOW_RPC, HIGH_PERFORMER
+  - **Always provide specific dollar amounts and recommended actions**
+• **simulate_financial_change**: Calculate hypothetical financial impact of payout or revenue changes.
+  - Use when user asks "what if I cut payout", "what if I raised CPA", "simulate", "impact of changing"
+  - For Publishers: simulate payout changes (change_variable='payout')
+  - For Buyers: simulate CPA/revenue changes (change_variable='revenue')
+  - change_amount is PER CALL: -5 means cut $5 per call, +10 means add $10 per call
+  - Returns: current_profit, simulated_profit, profit_change, affected_call_count
+  - **Always explain the impact in dollars and percentage**
+• **get_call_samples**: Fetch actual call records as proof points.
+  - Use when user asks "show me calls", "list examples", "give me proof", "find calls where..."
+  - Filters: publisher_name, buyer_name, status, duration range, revenue range, date range
+  - Status options: 'converted' (revenue > 0), 'missed' (>60s + $0), 'system_drop' (<5s + $0)
+  - Returns: time, publisher, caller (masked for privacy), duration, revenue, audio link
+  - Default 5 calls, max 25
+  - **Always include audio links so user can listen to the calls**
 
 Always use these tools to get real data. Never make up numbers.
 

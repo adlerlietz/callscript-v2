@@ -171,7 +171,7 @@ export default function FlagsPage() {
   };
 
   return (
-    <div className="p-8">
+    <div className="p-4 sm:p-6 lg:p-8">
       {/* Header */}
       <div className="mb-6 flex items-center justify-between">
         <div>
@@ -222,7 +222,8 @@ export default function FlagsPage() {
           <>
             {/* Table */}
             <div className="rounded-lg border border-zinc-800 overflow-hidden">
-              <table className="w-full">
+              <div className="overflow-x-auto">
+              <table className="w-full min-w-[800px]">
           <thead className="bg-zinc-900">
             <tr>
               <th className="w-12 px-4 py-3">
@@ -349,6 +350,7 @@ export default function FlagsPage() {
             )}
               </tbody>
               </table>
+              </div>
             </div>
 
             {/* Pagination Controls */}

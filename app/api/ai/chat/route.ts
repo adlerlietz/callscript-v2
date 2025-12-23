@@ -21,7 +21,7 @@ import {
   executeNegotiationAnalysis,
   executeSimulation,
   executeCallSamples,
-} from "@/lib/ai/tools";
+} from "@/lib/ai/tools/index";
 import { buildSystemPrompt } from "@/lib/ai/prompts";
 
 // Initialize OpenAI client (direct, not via OpenRouter)

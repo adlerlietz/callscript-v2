@@ -57,11 +57,7 @@ export async function POST(request: NextRequest) {
     const cleanAccountId = accountId.trim();
     const cleanToken = token.trim();
 
-    // Log for debugging (safe - shows first/last chars of token)
-    const tokenPreview = cleanToken.length > 10
-      ? `${cleanToken.slice(0, 6)}...${cleanToken.slice(-6)}`
-      : "too short";
-    console.log(`Testing Ringba connection: accountId="${cleanAccountId}", tokenLength=${cleanToken.length}, tokenPreview=${tokenPreview}`);
+    console.log(`Testing Ringba connection: accountId="${cleanAccountId}", hasToken=${cleanToken.length > 0}`);
 
     const payload = {
       reportStart: oneHourAgo.toISOString(),
@@ -114,7 +110,7 @@ export async function POST(request: NextRequest) {
           {
             success: false,
             error: "Invalid API token - please verify your token from Ringba settings",
-            details: `Account ID: "${cleanAccountId}", Token: ${cleanToken.length} chars (${tokenPreview}), Response: ${text.slice(0, 200)}`
+            details: `Account ID: "${cleanAccountId}", Response: ${text.slice(0, 200)}`
           },
           { status: 401 }
         );

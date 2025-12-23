@@ -42,16 +42,13 @@ export async function GET() {
     return NextResponse.json({ error: "Failed to fetch team" }, { status: 500 });
   }
 
-  // Get user emails from auth.users
-  const userIds = members?.map((m) => m.user_id) || [];
-  const { data: users } = await supabase
-    .from("users")
-    .select("id, email")
-    .in("id", userIds);
+  // Get user emails from Supabase Auth
+  const { data: authData } = await supabase.auth.admin.listUsers();
+  const authUsers = authData?.users || [];
 
   // Merge user emails with members
   const enrichedMembers = members?.map((m) => {
-    const user = users?.find((u) => u.id === m.user_id);
+    const user = authUsers.find((u) => u.id === m.user_id);
     return {
       ...m,
       email: user?.email || "Unknown",

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { Activity, Loader2, Lock } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -13,11 +13,35 @@ export default function UpdatePasswordPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
+  const [isValidSession, setIsValidSession] = useState(false);
   const router = useRouter();
+
+  // Verify user has valid session on mount
+  useEffect(() => {
+    const checkSession = async () => {
+      const supabase = createClient();
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        router.push("/login?error=session_expired");
+        return;
+      }
+      setIsValidSession(true);
+    };
+    checkSession();
+  }, [router]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
+
+    const supabase = createClient();
+
+    // Verify session is still valid before updating password
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    if (authError || !user) {
+      setError("Session expired. Please use the password reset link again.");
+      return;
+    }
 
     if (password.length < 8) {
       setError("Password must be at least 8 characters");
@@ -30,8 +54,6 @@ export default function UpdatePasswordPage() {
     }
 
     setIsLoading(true);
-
-    const supabase = createClient();
 
     // Update password and set the password_set flag
     const { error } = await supabase.auth.updateUser({
@@ -52,6 +74,15 @@ export default function UpdatePasswordPage() {
       router.push("/dashboard");
     }, 2000);
   };
+
+  // Show loading while checking session
+  if (!isValidSession) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-zinc-950">
+        <Loader2 className="h-8 w-8 animate-spin text-zinc-400" />
+      </div>
+    );
+  }
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-zinc-950">

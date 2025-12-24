@@ -92,8 +92,9 @@ export default function DemoExplorePage() {
           try {
             const data = JSON.parse(jsonStr);
 
-            if (data.type === "text-delta" && data.textDelta) {
-              assistantContent += data.textDelta;
+            // Handle text deltas (property is "delta" not "textDelta")
+            if (data.type === "text-delta" && data.delta) {
+              assistantContent += data.delta;
               setMessages((prev) =>
                 prev.map((m) =>
                   m.id === assistantId
@@ -101,8 +102,10 @@ export default function DemoExplorePage() {
                     : m
                 )
               );
-            } else if (data.type === "tool-result" && data.result) {
-              toolResults.push(data.result);
+            }
+            // Handle tool output (for charts)
+            else if (data.type === "tool-output-available" && data.output) {
+              toolResults.push(data.output);
               setMessages((prev) =>
                 prev.map((m) =>
                   m.id === assistantId

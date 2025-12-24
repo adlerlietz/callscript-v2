@@ -39,6 +39,13 @@ export async function updateSession(request: NextRequest) {
     data: { user },
   } = await supabase.auth.getUser();
 
+  // Demo routes bypass all auth - allow public access to /demo and /api/demo
+  const isDemoRoute = request.nextUrl.pathname.startsWith("/demo") ||
+                      request.nextUrl.pathname.startsWith("/api/demo");
+  if (isDemoRoute) {
+    return supabaseResponse;
+  }
+
   // Define protected and public routes
   const isLoginPage = request.nextUrl.pathname === "/login";
   const isSignupPage = request.nextUrl.pathname === "/signup";

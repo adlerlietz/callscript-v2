@@ -330,7 +330,7 @@ function CallInspector({
 
   return (
     <Sheet open={open} onOpenChange={onClose}>
-      <SheetContent className="w-[800px] overflow-y-auto bg-[#09090b] border-zinc-800">
+      <SheetContent className="w-full sm:max-w-[800px] max-h-[100dvh] overflow-y-auto bg-[#09090b] border-zinc-800">
         <SheetHeader className="pb-4 border-b border-zinc-800">
           <div className="flex items-center justify-between">
             <div>
@@ -425,7 +425,7 @@ function CallInspector({
               </span>
             )}
           </div>
-          <div className="bg-zinc-900 rounded-lg p-4 max-h-[400px] overflow-y-auto border border-zinc-800">
+          <div className="bg-zinc-900 rounded-lg p-4 min-h-[200px] max-h-[50vh] sm:max-h-[400px] overflow-y-auto border border-zinc-800">
             <div className="text-sm text-zinc-300 whitespace-pre-wrap font-sans">
               {renderTranscript()}
             </div>
